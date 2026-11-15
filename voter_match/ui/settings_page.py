@@ -109,7 +109,7 @@ class SettingsPage(QWidget):
         tabs.addTab(tab_rules, "🔤 देवनागरी नियम सम्पादक (Rules Editor)")
 
         tab_aliases = self.create_aliases_tab()
-        tabs.addTab(tab_aliases, "🤝 सीखे गए उपनाम / वर्तनी (Learned Aliases)")
+        tabs.addTab(tab_aliases, "📒 सीखे गए उपनाम / वर्तनी (Learned Aliases)")
 
         main_layout.addWidget(tabs)
 

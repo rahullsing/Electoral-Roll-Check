@@ -206,7 +206,7 @@ class DuplicatesPage(QWidget):
             f"{tr('आयु')} = {c['age'] or '—'}",
             f"{tr('मकान')} = {c['house_no'] or '—'}",
         ]
-        self.lbl_columns.setText(tr("🧩 उपयोग किए गए कॉलम: ") + " | ".join(parts))
+        self.lbl_columns.setText(tr("📌 उपयोग किए गए कॉलम: ") + " | ".join(parts))
 
     def run_duplicate_detection(self) -> None:
         use_b = self.combo_target_list.currentIndex() == 0

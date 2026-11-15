@@ -56,7 +56,7 @@ STANDARD_ROLES = [
     },
     {
         "role": "epic",
-        "label": "🪪 EPIC / मतदाता पहचान पत्र संख्या (Voter ID)",
+        "label": "🆔 EPIC / मतदाता पहचान पत्र संख्या (Voter ID)",
         "badge": "निश्चित पहचान (Exact ID)",
         "badge_color": "#0F766E",
         "type": "text",
@@ -74,7 +74,7 @@ STANDARD_ROLES = [
     },
     {
         "role": "relative_name",
-        "label": "👨‍👩‍👦 पिता / पति / माता का नाम (Relative Name)",
+        "label": "👪 पिता / पति / माता का नाम (Relative Name)",
         "badge": "अति आवश्यक (Compulsory)",
         "badge_color": "#DC2626",
         "type": "name",
@@ -92,7 +92,7 @@ STANDARD_ROLES = [
     },
     {
         "role": "gender",
-        "label": "⚧️ लिंग (Gender - पुरुष/महिला)",
+        "label": "👫 लिंग (Gender - पुरुष/महिला)",
         "badge": "सहायक (Supporting)",
         "badge_color": "#2563EB",
         "type": "category",

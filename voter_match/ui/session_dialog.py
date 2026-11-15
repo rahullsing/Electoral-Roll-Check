@@ -101,8 +101,8 @@ class SaveSessionDialog(QDialog):
 
         lbl_summary = QLabel(
             f"📁 <b>सत्यापन सूची:</b> {f_b}<br>"
-            f"📋 <b>कुल मतदाता:</b> {tot:,} | 🟢 <b>मिला:</b> {matched:,} | "
-            f"🟡 <b>जाँचें:</b> {review:,} | 🔴 <b>लापता:</b> {missing:,}"
+            f"📋 <b>कुल मतदाता:</b> {tot:,} | ● <b>मिला:</b> {matched:,} | "
+            f"● <b>जाँचें:</b> {review:,} | ● <b>लापता:</b> {missing:,}"
         )
         lbl_summary.setTextFormat(Qt.RichText)
         lbl_summary.setStyleSheet("font-size: 12px; color: #334155;")
@@ -304,7 +304,8 @@ class OpenSessionDialog(QDialog):
             self.table_sessions.setItem(row_i, 2, it_tot)
 
             # 3: Status Breakdown
-            stat_str = f"🟢 {s['matched_count']} | 🟡 {s['review_count']} | 🔴 {s['missing_count']}"
+            # column heading explains the order: मिला / जाँचें / लापता
+            stat_str = f"{s['matched_count']} / {s['review_count']} / {s['missing_count']}"
             it_st = QTableWidgetItem(stat_str)
             it_st.setTextAlignment(center_align)
             self.table_sessions.setItem(row_i, 3, it_st)

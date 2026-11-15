@@ -221,10 +221,10 @@ class ResultsPage(QWidget):
         self.combo_criteria = mark_translatable(QComboBox())
         self.combo_criteria.setStyleSheet("font-size: 11px; padding: 2px 8px; font-weight: bold;")
         self.combo_criteria.addItem("📋 सभी परिणाम (All Results)", "all")
-        self.combo_criteria.addItem("🟢 केवल मिला (Matched Only)", "मिला")
-        self.combo_criteria.addItem("🟡 केवल जाँचें (Needs Review Only)", "जाँचें")
-        self.combo_criteria.addItem("🔴 केवल नहीं मिला / लापता (Missing in A Only)", "लापता")
-        self.combo_criteria.addItem("🔵 केवल सूची A में (Only in List A)", "only_a")
+        self.combo_criteria.addItem("● केवल मिला (Matched Only)", "मिला")
+        self.combo_criteria.addItem("● केवल जाँचें (Needs Review Only)", "जाँचें")
+        self.combo_criteria.addItem("● केवल नहीं मिला / लापता (Missing in A Only)", "लापता")
+        self.combo_criteria.addItem("● केवल सूची A में (Only in List A)", "only_a")
         self.combo_criteria.currentIndexChanged.connect(self.populate_table)
         fb_layout.addWidget(self.combo_criteria)
 
@@ -289,7 +289,7 @@ class ResultsPage(QWidget):
         only_a = self.session_result.stats.get("केवल सूची A में", 0)
 
         card_matched = CompactStatPill(
-            title="🟢 मिला",
+            title="● मिला",
             count=matched,
             percentage=f"{(matched/total_b)*100:.1f}%",
             desc="दोनों सूचियों में समान पाए गए मतदाता (पुष्टि हो चुकी)।",
@@ -301,7 +301,7 @@ class ResultsPage(QWidget):
         card_matched.clicked.connect(self.on_filter_pill_clicked)
 
         card_review = CompactStatPill(
-            title="🟡 जाँचें",
+            title="● जाँचें",
             count=review,
             percentage=f"{(review/total_b)*100:.1f}%",
             desc="मात्रा या वर्तनी का अंतर है। स्थलीय सत्यापन आवश्यक है।",
@@ -313,7 +313,7 @@ class ResultsPage(QWidget):
         card_review.clicked.connect(self.on_filter_pill_clicked)
 
         card_missing = CompactStatPill(
-            title="🔴 लापता",
+            title="● लापता",
             count=missing,
             percentage=f"{(missing/total_b)*100:.1f}%",
             desc="सूची B में उपलब्ध हैं किन्तु सूची A में नहीं मिले।",
@@ -325,7 +325,7 @@ class ResultsPage(QWidget):
         card_missing.clicked.connect(self.on_filter_pill_clicked)
 
         card_only_a = CompactStatPill(
-            title="🔵 केवल A में",
+            title="● केवल A में",
             count=only_a,
             percentage="",
             desc="संदर्भ सूची में हैं लेकिन सत्यापन सूची में नहीं मिले।",

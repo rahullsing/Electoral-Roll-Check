@@ -28,7 +28,7 @@ def test_main_window_instantiation(qapp):
     win = MainWindow()
     assert win is not None
     assert win.stack.count() == 7
-    assert win.btn_nav_import.text() == "1️⃣ फ़ाइलें आयात करें"
+    assert win.btn_nav_import.text() == "1. फ़ाइलें आयात करें"
     assert win.btn_save_session is not None
     assert win.btn_open_session is not None
     win.close()

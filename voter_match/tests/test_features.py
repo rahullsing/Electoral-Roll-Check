@@ -646,7 +646,7 @@ def test_duplicates_columns_line_keeps_column_names_in_english_mode(qapp_or_skip
         i18n.set_language(i18n.LANG_EN, persist=False)
         i18n.apply_to(page, visible_only=False)
         txt = page.lbl_columns.text()
-        assert txt.startswith("🧩 Columns used:")
+        assert txt.startswith("📌 Columns used:")
         assert "मतदाता का नाम" in txt and "संबंधी का नाम" in txt and "= आयु" in txt  # data kept as-is
     finally:
         i18n.set_language(i18n.LANG_HI, persist=False)
@@ -739,3 +739,35 @@ def test_english_mode_never_alters_user_data_anywhere(qapp_or_skip):
     finally:
         i18n.set_language(i18n.LANG_HI, persist=False)
         w.close()
+
+
+def test_ui_text_uses_only_windows10_safe_symbols():
+    """Older Windows 10 builds draw an empty box for newer emoji: keycap digits
+    (1️⃣), flags, ZWJ-joined emoji and emoji added after Unicode 8. Guard every
+    UI source file and the English translation table."""
+    import ast
+
+    def unsafe(ch: str) -> bool:
+        cp = ord(ch)
+        return (
+            cp == 0x20E3                      # combining enclosing keycap
+            or 0x1F1E6 <= cp <= 0x1F1FF       # regional indicators (flags)
+            or 0x1F7E0 <= cp <= 0x1F7FF       # coloured circles/squares (Unicode 12)
+            or 0x1F900 <= cp <= 0x1F9FF       # Unicode 9-13 emoji (🤝 🧩 …)
+            or 0x1FA70 <= cp <= 0x1FAFF       # Unicode 12-15 emoji (🪪 …)
+            or cp in (0x26A7,)                # ⚧ (colour glyph only from Win10 1903+)
+        )
+
+    problems = []
+    targets = list((PROJECT_ROOT / "voter_match" / "ui").glob("*.py")) + [
+        PROJECT_ROOT / "voter_match" / "core" / "forms.py",
+        PROJECT_ROOT / "voter_match" / "core" / "batch.py",
+    ]
+    for f in targets:
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                s = node.value
+                if any(unsafe(ch) for ch in s) or ("\u200d" in s and any(ord(c) > 0x1F000 for c in s)):
+                    problems.append(f"{f.name}: {s[:40]!r}")
+    assert not problems, "Windows-10-unsafe symbols:\n" + "\n".join(problems)

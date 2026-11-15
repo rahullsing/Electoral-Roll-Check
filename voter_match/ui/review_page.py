@@ -519,21 +519,21 @@ class ReviewPage(QWidget):
 
         act_box.addStretch()
 
-        self.btn_pick_1 = QPushButton("1️⃣ प्रत्याशी-1 सही है [1]")
+        self.btn_pick_1 = QPushButton("1. प्रत्याशी-1 सही है [1]")
         self.btn_pick_1.setStyleSheet(
             f"background-color: {GREEN_PRIMARY}; color: #FFFFFF; font-weight: bold; padding: 8px 16px; border-radius: 6px; font-size: 13px;"
         )
         self.btn_pick_1.clicked.connect(lambda: self.record_decision("accepted_top1", 0))
         act_box.addWidget(self.btn_pick_1)
 
-        self.btn_pick_2 = QPushButton("2️⃣ प्रत्याशी-2 सही है [2]")
+        self.btn_pick_2 = QPushButton("2. प्रत्याशी-2 सही है [2]")
         self.btn_pick_2.setStyleSheet(
             "background-color: #0284C7; color: #FFFFFF; font-weight: bold; padding: 8px 16px; border-radius: 6px; font-size: 13px;"
         )
         self.btn_pick_2.clicked.connect(lambda: self.record_decision("accepted_top2", 1))
         act_box.addWidget(self.btn_pick_2)
 
-        self.btn_pick_3 = QPushButton("3️⃣ प्रत्याशी-3 सही है [3]")
+        self.btn_pick_3 = QPushButton("3. प्रत्याशी-3 सही है [3]")
         self.btn_pick_3.setStyleSheet(
             "background-color: #475569; color: #FFFFFF; font-weight: bold; padding: 8px 16px; border-radius: 6px; font-size: 13px;"
         )

@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
 
         title_vbox = QVBoxLayout()
         title_vbox.setSpacing(2)
-        app_title = QLabel("🇮🇳 मतदाता सूची मिलान — बी०एल०ओ० साथी (Electoral Roll Check)")
+        app_title = QLabel("मतदाता सूची मिलान — बी०एल०ओ० साथी (Electoral Roll Check)")
         app_title.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
         app_subtitle = QLabel("उत्तर प्रदेश निर्वाचन नामावली एवं पंचायत सूची शुद्धिकरण प्रणाली (पूर्णतः ऑफलाइन एवं सुरक्षित)")
         app_subtitle.setStyleSheet("font-size: 11px; color: #D0E1FD;")
@@ -260,10 +260,10 @@ class MainWindow(QMainWindow):
         self.nav_layout.setContentsMargins(10, 6, 10, 6)
         self.nav_layout.setSpacing(6)
 
-        self.btn_nav_import = self._create_nav_btn("1️⃣ फ़ाइलें आयात करें", 0)
-        self.btn_nav_map = self._create_nav_btn("2️⃣ कॉलम मिलाएँ", 1)
-        self.btn_nav_results = self._create_nav_btn("3️⃣ मिलान परिणाम", 2)
-        self.btn_nav_review = self._create_nav_btn("4️⃣ स्थलीय सत्यापन", 3)
+        self.btn_nav_import = self._create_nav_btn("1. फ़ाइलें आयात करें", 0)
+        self.btn_nav_map = self._create_nav_btn("2. कॉलम मिलाएँ", 1)
+        self.btn_nav_results = self._create_nav_btn("3. मिलान परिणाम", 2)
+        self.btn_nav_review = self._create_nav_btn("4. स्थलीय सत्यापन", 3)
 
         self.nav_layout.addWidget(self.btn_nav_import)
         self.nav_layout.addWidget(self.btn_nav_map)
