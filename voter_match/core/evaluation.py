@@ -33,6 +33,7 @@ class Label:
     sibling: bool
     epic_match: bool
     epic_mismatch: bool
+    age_conflict: bool = False
 
 
 @dataclass
@@ -82,6 +83,7 @@ def extract_labels(records: list[MatchRecordB]) -> list[Label]:
             sibling=sr.is_sibling_guard_applied,
             epic_match=sr.epic_match,
             epic_mismatch=sr.epic_mismatch,
+            age_conflict=sr.age_conflict,
         ))
     return labels
 
@@ -103,6 +105,7 @@ def evaluate(
             and (not has_relative or lb.relative_sim >= min_relative_sim)
             and not lb.sibling
             and not lb.epic_mismatch
+            and not lb.age_conflict
         ))
         if is_match:
             auto_m += 1

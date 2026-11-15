@@ -8,7 +8,13 @@ O(n^2) memory (~100 MB at 5,000 x 5,000).
 Instead we split the bipartite candidate graph into connected components
 (union-find) and solve a small dense assignment per component. Because no
 edge crosses component boundaries, the union of the per-component optima is
-exactly the global optimum, so results are identical to the dense solve.
+exactly the global optimum.
+
+Objective: maximise the total *confidence above the threshold*, i.e. the sum
+of (score - min_score) over assigned pairs, where leaving a voter unassigned
+costs nothing. (An earlier objective gave every assigned pair a large bonus,
+which maximised the NUMBER of pairs first: it would break up a 100% match to
+form two weak 55-60% pairs, leaving genuine matches marked "missing".)
 """
 
 from __future__ import annotations
@@ -18,10 +24,8 @@ from typing import Iterable
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-# Cost for a non-edge inside a component's dense sub-matrix. Must exceed any
-# real edge cost (max 1.0 - min_score) so the solver only picks real edges
-# whenever possible, mirroring the original dense solver's 2.0 filler.
-_NON_EDGE_COST = 2.0
+# Tiny bonus so an edge exactly at min_score is still worth taking over nothing.
+_EPS = 1e-6
 
 
 class _UnionFind:
@@ -76,7 +80,6 @@ def solve_sparse_assignment(
     for b, a, s in edge_list:
         components[uf.find(("b", b))].append((b, a, s))
 
-    max_cost = 1.0 - min_score
     assigned: dict[int, int] = {}
 
     for comp_edges in components.values():
@@ -90,13 +93,14 @@ def solve_sparse_assignment(
         b_pos = {b: i for i, b in enumerate(b_ids)}
         a_pos = {a: j for j, a in enumerate(a_ids)}
 
-        cost = np.full((len(b_ids), len(a_ids)), _NON_EDGE_COST, dtype=np.float64)
+        # cost = -(confidence above threshold); a non-edge (0) means "leave unassigned"
+        cost = np.zeros((len(b_ids), len(a_ids)), dtype=np.float64)
         for b, a, s in comp_edges:
-            cost[b_pos[b], a_pos[a]] = 1.0 - s
+            cost[b_pos[b], a_pos[a]] = -(s - min_score + _EPS)
 
         rows, cols = linear_sum_assignment(cost)
         for r, c in zip(rows, cols):
-            if cost[r, c] <= max_cost + 1e-9:
+            if cost[r, c] < 0:
                 assigned[b_ids[r]] = a_ids[c]
 
     return assigned

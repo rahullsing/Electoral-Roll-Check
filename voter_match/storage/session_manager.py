@@ -125,6 +125,7 @@ def score_result_to_dict(sr: ScoreResult | None) -> dict[str, Any] | None:
         "relative_name_sim": sr.relative_name_sim,
         "epic_match": sr.epic_match,
         "epic_mismatch": sr.epic_mismatch,
+        "age_conflict": sr.age_conflict,
     }
 
 
@@ -140,6 +141,7 @@ def dict_to_score_result(d: dict[str, Any] | None) -> ScoreResult | None:
         relative_name_sim=float(d.get("relative_name_sim", 0.0)),
         epic_match=bool(d.get("epic_match", False)),
         epic_mismatch=bool(d.get("epic_mismatch", False)),
+        age_conflict=bool(d.get("age_conflict", False)),
     )
 
 

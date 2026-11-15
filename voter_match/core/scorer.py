@@ -58,6 +58,7 @@ class ScoreResult:
     relative_name_sim: float = 0.0
     epic_match: bool = False        # Both EPIC (voter ID) numbers present and identical
     epic_mismatch: bool = False     # Both EPIC numbers present but different
+    age_conflict: bool = False      # Age gap > 2x tolerance: never auto-"मिला", needs review
 
 
 def normalize_gender(val: Any) -> str:
@@ -291,6 +292,7 @@ class RecordScorer:
         house_bonus = 0.0
 
         # Check Age mapping
+        age_conflict = False
         age_m = self.age_m
         if age_m:
             age_a = self._cached("age", parse_age, record_a.get(age_m.col_a))
@@ -310,6 +312,11 @@ class RecordScorer:
                     pen = min(0.20, extra * 0.025)
                     age_bonus_penalty = -pen
                     reasons.append(f"आयु अंतर {diff} वर्ष (-{int(pen*100)}%)")
+                    if diff > 2 * max(1, age_m.tolerance):
+                        # Same name + same father with a big age gap is often a
+                        # different person (namesake, uncle/nephew): a BLO must decide.
+                        age_conflict = True
+                        reasons.append("आयु में बड़ा अंतर — स्वतः मिलान नहीं (जाँच आवश्यक)")
             else:
                 reasons.append("आयु अनुपलब्ध")
 
@@ -398,4 +405,5 @@ class RecordScorer:
             relative_name_sim=relative_name_sim,
             epic_match=epic_match,
             epic_mismatch=epic_mismatch,
+            age_conflict=age_conflict and not epic_match,
         )

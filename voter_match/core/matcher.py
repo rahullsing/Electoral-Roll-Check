@@ -44,10 +44,15 @@ def classify_tier(
             and (not has_relative or best_res.relative_name_sim >= min_relative_sim)
             and not best_res.is_sibling_guard_applied
             and not best_res.epic_mismatch
+            and not best_res.age_conflict
         )
         if is_matched:
             return "मिला"
         if best_res.score >= threshold_review:
+            return "जाँचें"
+        # The assigned partner is weak, but a strong candidate exists (it went to
+        # another List-B row, e.g. a duplicate entry): a human must decide.
+        if top_score is not None and top_score >= threshold_review:
             return "जाँचें"
         return "लापता"
     if top_score is not None and top_score >= threshold_review:
