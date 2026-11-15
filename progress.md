@@ -5,11 +5,41 @@ Offline Windows Application for Fuzzy Hindi Voter-List Matching (बूथ ल�
 ## 📌 Status Dashboard
 - **Total Modules**: 14 Major Components
 - **Completed**: 14 / 14 (100% Complete)
-- **Status**: Production Quality, Full Code Written, All 42 Unit, Integration, UI & Benchmark Tests Passing!
-- **Real-World Testing**: Verified against actual user rolls `Chanchpur_Bhatela_Voter_List_2026_Hindi.xlsx` (649 rows) vs `Chanchpur_Bhatela_Check_List_B.xlsx` (707 rows) in 1.23s!
+- **Status**: Production Quality, Full Code Written, All 57 Unit, Integration, UI, i18n & Benchmark Tests Passing!
+- **Real-World Testing**: Verified against actual user rolls `Chanchpur_Bhatela_Voter_List_2026_Hindi.xlsx` (649 rows) vs `Chanchpur_Bhatela_Check_List_B.xlsx` (707 rows) in ~0.9s — Matched 400 / Review 165 / Missing 142
+- **Interface Languages**: हिंदी and English (switchable from the banner or Settings, remembered across restarts)
 - **Target Audience**: Booth Level Officers (BLOs) / Primary School Teachers in Uttar Pradesh
 - **GitHub Repository**: [rahullsing/Electoral-Roll-Check](https://github.com/rahullsing/Electoral-Roll-Check.git) (Synced & Pushed to `main`)
 - **Executable**: Single-file standalone Windows executable at `dist/ElectoralRollCheck.exe` + 1-click launcher `run_app.bat`
+
+---
+
+## 🧭 Sprint: Matching Accuracy, Bilingual UI, Copy-to-Excel & Data Safety (2026-11-15, later)
+
+### Matching accuracy (`core/assignment.py`, `core/matcher.py`, `core/scorer.py`)
+1. **Assignment objective fixed** — the 1-to-1 solver used to maximise the *number* of pairs first, so it broke 100% matches apart to form two weak 55–60% pairs (genuine voters ended up "Missing"). It now maximises total confidence above the threshold; leaving a voter unassigned costs nothing.
+2. **Strong candidate taken elsewhere → Review**, not Missing (usually a duplicate entry in List B).
+3. **Age-gap guard** — same name + same relative with an age gap > 2× tolerance (namesakes, uncle/nephew) is never auto-"मिला"; it goes to Review (`ScoreResult.age_conflict`).
+4. Chanchpur real data: **Matched 384 → 400, Review 104 → 165, Missing 219 → 142**; 15/15 sampled newly-matched records verified genuine.
+
+### Duplicate detection (`core/duplicates.py`, `ui/duplicates_page.py`)
+1. Page now uses the **Step-2 column mapping** (List A → col_a, List B → col_b) instead of guessing; it previously missed relative columns such as "संबंधी का नाम", so duplicates were judged on the voter name alone.
+2. Strict pair rule: voter ≥ 90% **and** relative ≥ 85% (voter ≥ 97% when no relative column); typing-slip exception (voter ≥ 85%, identical relative, age ±1); siblings / large age gaps excluded.
+3. **Complete-linkage grouping** — a voter joins a group only if it matches every member (no A~B~C chaining).
+4. "🧩 Columns used" line shows exactly which columns were compared. Chanchpur List B: 16 mostly-false groups → 3 plausible ones.
+
+### Bilingual interface (`ui/i18n.py`, `ui/i18n_en.py`)
+1. Whole UI switchable **हिंदी ⇄ English** (banner toggle + Settings), persisted with QSettings; ~500 strings incl. dynamic templates, message boxes, file dialogs and the status bar.
+2. **User data is never translated**: names, relatives, column names, sample values, search text, serial numbers, file/profile/session names are protected (`skip_translation`, `trf`, `mark_headers_only`, `mark_data_columns`, `keep_item`, `ROLE_NO_I18N`). Logic that used to read on-screen text now uses item data / indexes.
+3. Fixed: a diff-highlighting fragment "म" was translated to "F" (name shown as "अनाFका"); Step-2 gender sample "महिला" shown as "Female"; accuracy dialog / progress line partly untranslated.
+4. Guards: coverage test (every UI string has English), adversarial whole-app test (voters named "मकान", "सूची", "सफल"…, relative "मतदाता", gender "महिला" stay unchanged on every screen).
+
+### UI quality
+1. Container styles leaked onto every child label (QLabel is a QFrame) → every label boxed; styles now scoped per widget. Mapping badges rendered dark (`#RRGGBBAA` read as `#AARRGGBB`) — fixed with `rgba()`.
+2. **Quick Search rebuilt**: one compact toolbar, results fill the screen, live search, search by name / relative / both / serial-EPIC, shows serial, relative, age, gender, house, row; follows the live Step-2 mapping; serial numbers stored as floats (1349.0) now found and shown correctly.
+3. Results pills no longer truncated; long reason columns fit the screen; Review shows Hindi field labels; matras no longer split from consonants in diff highlighting (no dotted circles).
+4. **Copy to Excel** (`ui/copy_support.py`): Excel-style cell selection, Ctrl+C / Ctrl+Shift+C (with headings), right-click copy menu on every table; Field Verification "📋 Copy details" (Ctrl+Shift+C) and per-candidate "📋 Copy" buttons copy the original record as one Excel row; voter-detail labels selectable.
+5. **PDF Hindi fixed**: Windows ships Nirmala UI as `Nirmala.ttc`; exporter looked for `.ttf` and fell back to Helvetica (Hindi printed as black squares). Now loads the TTC (with Mangal/Aparajita/Kokila fallbacks), reorders the short-i matra when no shaping engine is present, and enables HarfBuzz shaping automatically if `uharfbuzz` is installed.
 
 ---
 
@@ -225,7 +255,7 @@ Offline Windows Application for Fuzzy Hindi Voter-List Matching (बूथ ल�
   - **Real-world Chanchpur Bhatela dataset test (`Chanchpur_Bhatela_Voter_List_2026_Hindi.xlsx` vs `Chanchpur_Bhatela_Check_List_B.xlsx`)**: 707 vs 649 records in 1.23s
 - [x] UI headless tests (`voter_match/tests/test_ui.py`):
   - Main window instantiation, contrast verification, mapping auto-suggestions, single button workflow, and screen proportions
-- [x] Test suite status: **22/22 tests passing**
+- [x] Test suite status: **57/57 tests passing** (core, e2e, UI, features, i18n data-safety, 3,000×3,000 benchmark)
 - [x] `requirements.txt`
 - [x] `build.spec` (PyInstaller Windows configuration)
 - [x] `installer/setup.iss` (Inno Setup script for offline Windows deployment)
