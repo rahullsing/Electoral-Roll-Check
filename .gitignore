@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Distribution
+dist/
+build/
+*.spec.bak
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local SQLite databases and logs
+.app_data/
+*.db
+*.log
+
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# Antigravity agent temp artifacts
+.gemini/
+.system_generated/

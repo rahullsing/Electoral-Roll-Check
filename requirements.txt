@@ -1,0 +1,29 @@
+# Electoral Roll Check — Offline Windows App for Fuzzy Hindi Voter-List Matching
+# Dependencies for Development, Runtime, and Packaging
+
+# Core GUI Framework
+PySide6>=6.6.0
+
+# Data Processing & Spreadsheet Handling
+pandas>=2.1.0
+openpyxl>=3.1.2
+
+# Indic Fuzzy Matching & C-Extension Optimization
+rapidfuzz>=3.6.0
+scipy>=1.11.0
+numpy>=1.26.0
+
+# Document & PDF Generation
+reportlab>=4.0.0
+Pillow>=10.0.0
+
+# OCR (Phase 2 - Optional scanned image support)
+# opencv-python>=4.8.0
+# pytesseract>=0.3.10
+# pdf2image>=1.16.3
+
+# Automated Testing
+pytest>=8.0.0
+
+# Windows Packaging
+pyinstaller>=6.4.0

@@ -1,0 +1,135 @@
+[
+  {
+    "id": "strip_format",
+    "name": "फॉर्मेटिंग और ZWJ/ZWNJ हटाएँ",
+    "description": "Remove Zero Width Joiner, Non-Joiner, and invisible Unicode markers",
+    "enabled": true,
+    "pattern": "[\\u200B-\\u200D\\uFEFF]",
+    "replacement": ""
+  },
+  {
+    "id": "normalize_digits",
+    "name": "देवनागरी अंक रूपांतरण",
+    "description": "Convert Devanagari digits (०-९) to standard digits (0-9)",
+    "enabled": true,
+    "pattern": "०|१|२|३|४|५|६|७|८|९",
+    "replacement": {
+      "०": "0", "१": "1", "२": "2", "३": "3", "४": "4",
+      "५": "5", "६": "6", "७": "7", "८": "8", "९": "9"
+    }
+  },
+  {
+    "id": "strip_nukta",
+    "name": "नुक्ता हटाएँ (Nukta Removal)",
+    "description": "Remove nukta (U+093C) to match क़->क, ख़->ख, ग़->ग, ज़->ज, फ़->फ",
+    "enabled": true,
+    "pattern": "\\u093C",
+    "replacement": ""
+  },
+  {
+    "id": "clean_punctuation",
+    "name": "विराम चिह्न और संक्षिप्त बिंदु हटाएँ",
+    "description": "Remove punctuation, abbreviation dots, dashes, slashes",
+    "enabled": true,
+    "pattern": "[\\.,;:!?\\-_/\\\\()\\[\\]{}\"']",
+    "replacement": " "
+  },
+  {
+    "id": "special_om",
+    "name": "ॐ / ओम रूपांतरण",
+    "description": "Normalize sacred syllable ॐ (U+0950) to standard Devanagari ओम",
+    "enabled": true,
+    "pattern": "\\u0950",
+    "replacement": "ओम"
+  },
+  {
+    "id": "special_singh",
+    "name": "सिंह / सिंग रूपांतरण",
+    "description": "Normalize सिंग / सिँघ variations to सिह",
+    "enabled": true,
+    "pattern": "सिंग|सिँघ|सिंह",
+    "replacement": "सिह"
+  },
+  {
+    "id": "special_khan",
+    "name": "खान / खां / खाँ / खॉं रूपांतरण",
+    "description": "Normalize Khan variants to uniform form खा",
+    "enabled": true,
+    "pattern": "खान|खां|खाँ|खॉं|खा़न",
+    "replacement": "खा"
+  },
+  {
+    "id": "half_nasals",
+    "name": "अर्ध नासिक्य (Half-nasals) विलोपन",
+    "description": "Remove half nasals न्, म्, ण्, ङ्, ञ् before consonants",
+    "enabled": true,
+    "pattern": "(?:[नमणङञ]\\u094D)",
+    "replacement": ""
+  },
+  {
+    "id": "strip_nasal_marks",
+    "name": "अनुस्वार एवं चंद्रबिंदु हटाएँ",
+    "description": "Remove anusvara (ं) and chandrabindu (ँ)",
+    "enabled": true,
+    "pattern": "[\\u0901\\u0902]",
+    "replacement": ""
+  },
+  {
+    "id": "ra_conjuncts",
+    "name": "प्रकार / कृष्ण र-संयोग सामान्यीकरण",
+    "description": "Remove reph/rakar (्र) and ri vowel (ृ) like प्रसाद->प्साद, कृष्ण->क्रष्ण",
+    "enabled": true,
+    "pattern": "\\u094Dर|र\\u094D|[\\u0943\\u0944]",
+    "replacement": ""
+  },
+  {
+    "id": "remaining_halant",
+    "name": "शेष हलंत (्) हटाएँ",
+    "description": "Remove any leftover virama/halant (U+094D)",
+    "enabled": true,
+    "pattern": "\\u094D",
+    "replacement": ""
+  },
+  {
+    "id": "matra_normalization",
+    "name": "मात्रा समरूपीकरण (दीर्घ -> ह्रस्व)",
+    "description": "Normalize ी->ि, ू->ु, ै->े, ौ->ो, ॉ->ा",
+    "enabled": true,
+    "pattern": "ी|ू|ै|ौ|ॉ",
+    "replacement": {
+      "ी": "ि",
+      "ू": "ु",
+      "ै": "े",
+      "ौ": "ो",
+      "ॉ": "ा"
+    }
+  },
+  {
+    "id": "vowel_normalization",
+    "name": "स्वतंत्र स्वर समरूपीकरण",
+    "description": "Normalize independent vowels ई->इ, ऊ->उ, ऐ->ए, औ->ओ",
+    "enabled": true,
+    "pattern": "ई|ऊ|ऐ|औ",
+    "replacement": {
+      "ई": "इ",
+      "ऊ": "उ",
+      "ऐ": "ए",
+      "औ": "ओ"
+    }
+  },
+  {
+    "id": "consonant_classes",
+    "name": "सजातीय व्यंजन समरूपीकरण",
+    "description": "Normalize श,ष->स, व->ब, ण->न, ढ़->ढ, ड़->ड",
+    "enabled": true,
+    "pattern": "श|ष|व|ण|ढ़|ड़",
+    "replacement": {
+      "श": "स",
+      "ष": "स",
+      "व": "ब",
+      "ण": "न",
+      "ढ़": "ढ",
+      "ड़": "ड"
+    }
+  }
+]
