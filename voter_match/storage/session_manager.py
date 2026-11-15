@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 from typing import Any
 import sqlite3
@@ -18,6 +19,73 @@ from voter_match.core.matcher import MatchRecordB, MatchCandidate, MatchSessionR
 from voter_match.storage.db import get_app_data_dir, get_default_storage, StorageManager
 
 SESSION_FILE_EXTENSION = ".vsession"
+
+
+def clean_value_for_json(val: Any) -> Any:
+    """Recursively convert NumPy/Pandas scalar types, NaNs, and custom objects to native Python types."""
+    if val is None:
+        return None
+
+    # Check for pandas/numpy NA or NaN
+    try:
+        import pandas as pd
+        if pd.isna(val):
+            return None
+    except Exception:
+        pass
+
+    if isinstance(val, (int, str, bool)):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return val
+
+    # Numpy/Pandas scalars like np.int64, np.float64, np.bool_
+    if hasattr(val, "item"):
+        try:
+            it = val.item()
+            if isinstance(it, float) and (math.isnan(it) or math.isinf(it)):
+                return None
+            return it
+        except Exception:
+            pass
+
+    # Collections
+    if isinstance(val, dict):
+        return {str(k): clean_value_for_json(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple, set)):
+        return [clean_value_for_json(item) for item in val]
+
+    return str(val)
+
+
+def json_default_fallback(o: Any) -> Any:
+    """Fallback handler for json.dumps/dump if any foreign object slips through."""
+    if hasattr(o, "item"):
+        try:
+            return o.item()
+        except Exception:
+            pass
+    try:
+        import pandas as pd
+        if pd.isna(o):
+            return None
+    except Exception:
+        pass
+    try:
+        import numpy as np
+        if isinstance(o, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+            return int(o)
+        if isinstance(o, (np.floating, np.float64, np.float32)):
+            return None if math.isnan(o) or math.isinf(o) else float(o)
+        if isinstance(o, (np.bool_,)):
+            return bool(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+    except Exception:
+        pass
+    return str(o)
 
 
 @dataclass
@@ -134,7 +202,7 @@ def dict_to_session_result(d: dict[str, Any] | None) -> MatchSessionResult | Non
 
 
 def session_data_to_dict(data: SavedSessionData) -> dict[str, Any]:
-    return {
+    raw_dict = {
         "version": "1.0",
         "session_id": data.session_id,
         "title": data.title,
@@ -149,6 +217,7 @@ def session_data_to_dict(data: SavedSessionData) -> dict[str, Any]:
         "created_at": data.created_at or datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
     }
+    return clean_value_for_json(raw_dict)
 
 
 def dict_to_session_data(d: dict[str, Any]) -> SavedSessionData:
@@ -209,7 +278,7 @@ class SessionManager:
             data.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         data_dict = session_data_to_dict(data)
-        data_json = json.dumps(data_dict, ensure_ascii=False)
+        data_json = json.dumps(data_dict, ensure_ascii=False, default=json_default_fallback)
 
         total_b = len(data.records_b)
         matched = 0
@@ -338,7 +407,7 @@ class SessionManager:
             target = target.with_suffix(SESSION_FILE_EXTENSION)
         data_dict = session_data_to_dict(data)
         with open(target, "w", encoding="utf-8") as f:
-            json.dump(data_dict, f, ensure_ascii=False, indent=2)
+            json.dump(data_dict, f, ensure_ascii=False, indent=2, default=json_default_fallback)
 
     def import_session_file(self, file_path: Path | str) -> SavedSessionData:
         """Import session data from a portable .vsession file."""

@@ -5,7 +5,7 @@ Offline Windows Application for Fuzzy Hindi Voter-List Matching (बूथ ल�
 ## 📌 Status Dashboard
 - **Total Modules**: 14 Major Components
 - **Completed**: 14 / 14 (100% Complete)
-- **Status**: Production Quality, Full Code Written, All 24 Unit, Integration & UI Tests Passing!
+- **Status**: Production Quality, Full Code Written, All 25 Unit, Integration & UI Tests Passing!
 - **Real-World Testing**: Verified against actual user rolls `Chanchpur_Bhatela_Voter_List_2026_Hindi.xlsx` (649 rows) vs `Chanchpur_Bhatela_Check_List_B.xlsx` (707 rows) in 1.23s!
 - **Target Audience**: Booth Level Officers (BLOs) / Primary School Teachers in Uttar Pradesh
 - **GitHub Repository**: [rahullsing/Electoral-Roll-Check](https://github.com/rahullsing/Electoral-Roll-Check.git) (Synced & Pushed to `main`)
@@ -14,7 +14,11 @@ Offline Windows Application for Fuzzy Hindi Voter-List Matching (बूथ ल�
 ---
 
 ## 🌟 Key Innovations & Recent Upgrades (Latest Sprint)
-1. **Criteria Filter Dropdown & Clickable KPI Pills (Screen 3 - मिलान परिणाम)**:
+1. **NumPy / Pandas Scalar JSON Serialization Guard (Fixed `int64` error)**:
+   - Fixed `TypeError: Object of type int64 is not JSON serializable` when saving sessions or exporting `.vsession` files.
+   - Built recursive `clean_value_for_json()` and `json_default_fallback()` in `voter_match/storage/session_manager.py` that automatically maps NumPy integers (`np.int64`, `np.int32`), floats (`np.float64`), booleans (`np.bool_`), and Pandas null values (`pd.NA`, `np.nan`) to native Python types.
+   - Added unit test `test_session_numpy_int64_serialization` ensuring permanent regression protection.
+2. **Criteria Filter Dropdown & Clickable KPI Pills (Screen 3 - मिलान परिणाम)**:
    - Added criteria filter dropdown (`combo_criteria`):
      - `📋 सभी परिणाम (All Results)`
      - `🟢 केवल मिला (Matched Only)`

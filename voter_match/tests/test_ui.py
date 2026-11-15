@@ -214,3 +214,57 @@ def test_results_page_filtering_criteria(qapp):
     assert page.table_results.rowCount() == 3
 
     page.close()
+
+
+def test_session_numpy_int64_serialization(tmp_path):
+    import numpy as np
+    import pandas as pd
+    from voter_match.storage.session_manager import get_default_session_manager, SavedSessionData
+    from voter_match.core.matcher import MatchRecordB, MatchSessionResult
+    from voter_match.core.scorer import ScoreResult
+
+    sm = get_default_session_manager()
+
+    rec_with_int64 = {
+        "क्रम संख्या": np.int64(105),
+        "आयु": np.int64(45),
+        "स्कोर": np.float64(0.92),
+        "_orig_row": np.int64(12),
+        "खाली": pd.NA,
+    }
+
+    rec_b = MatchRecordB(
+        b_idx=0,
+        record_b=rec_with_int64,
+        tier="मिला",
+        best_score_result=ScoreResult(score=0.95, reasons=["समान"]),
+    )
+
+    sr = MatchSessionResult(
+        records_b=[rec_b],
+        unmatched_a_indices=[1],
+        records_a=[rec_with_int64],
+        stats={"मिला": 1},
+    )
+
+    session = SavedSessionData(
+        session_id="test_numpy_int64_guard",
+        title="NumPy Int64 Guard Test",
+        file_a="a.xlsx",
+        file_b="b.xlsx",
+        records_a=[rec_with_int64],
+        records_b=[rec_with_int64],
+        session_result=sr,
+    )
+
+    # SQLite save
+    assert sm.save_session(session) is True
+
+    # .vsession file export & import
+    v_path = tmp_path / "test_session.vsession"
+    sm.export_session_file(session, v_path)
+    loaded = sm.import_session_file(v_path)
+    assert loaded.records_b[0]["क्रम संख्या"] == 105
+    assert loaded.records_b[0]["आयु"] == 45
+
+    sm.delete_session("test_numpy_int64_guard")
