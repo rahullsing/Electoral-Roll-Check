@@ -203,8 +203,9 @@ def export_form_actions_pdf(actions: list[FormAction], output_path: str) -> None
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-    from voter_match.export.pdf_export import ACTIVE_FONT, ACTIVE_FONT_BOLD
+    from reportlab.platypus import PageBreak, SimpleDocTemplate, Spacer, Table, TableStyle
+    # Paragraph from pdf_export applies the Devanagari ordering fallback
+    from voter_match.export.pdf_export import ACTIVE_FONT, ACTIVE_FONT_BOLD, Paragraph
 
     title = ParagraphStyle("t", fontName=ACTIVE_FONT_BOLD, fontSize=14, leading=18,
                            textColor=colors.HexColor("#1F4E79"))
@@ -214,7 +215,7 @@ def export_form_actions_pdf(actions: list[FormAction], output_path: str) -> None
     doc = SimpleDocTemplate(str(output_path), pagesize=landscape(A4),
                             leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
     story: list[Any] = []
-    headers = ["क्र०", "सूची", "कागज़ी क्र०", "मतदाता का नाम", "पिता/पति का नाम", "आयु", "मकान", "कारण / टिप्पणी", "✓"]
+    headers = ["क्र०", "सूची", "कागज़ी क्र०", "मतदाता का नाम", "पिता/पति का नाम", "आयु", "मकान", "कारण / टिप्पणी", "भरा"]
     widths = [28, 30, 55, 120, 120, 30, 40, 340, 25]
     for n, form in enumerate(("6", "7", "8")):
         rows = [a for a in actions if a.form == form]
@@ -226,7 +227,7 @@ def export_form_actions_pdf(actions: list[FormAction], output_path: str) -> None
         for i, a in enumerate(rows, start=1):
             why = a.reason + (f" | टिप्पणी: {a.remark}" if a.remark else "")
             data.append([Paragraph(str(x), cell) for x in
-                         (i, a.source, a.serial_no, a.voter_name, a.relative_name, a.age, a.house_no, why, "☐")])
+                         (i, a.source, a.serial_no, a.voter_name, a.relative_name, a.age, a.house_no, why, "[   ]")])
         if len(data) == 1:
             data.append([Paragraph("—", cell)] + [""] * (len(headers) - 1))
         t = Table(data, colWidths=widths, repeatRows=1)

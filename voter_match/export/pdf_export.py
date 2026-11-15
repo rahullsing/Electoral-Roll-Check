@@ -6,6 +6,7 @@ A4 landscape tables, and color-coded verification tiers.
 
 from __future__ import annotations
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate,
-    Paragraph,
+    Paragraph as _RLParagraph,
     Spacer,
     Table,
     TableStyle,
@@ -26,25 +27,104 @@ from reportlab.pdfbase.ttfonts import TTFont
 from voter_match.core.matcher import MatchSessionResult
 from voter_match.core.scorer import ColumnMapping
 
-# Locate Windows Nirmala UI or Devanagari font
+# Locate a Devanagari-capable font. Helvetica has no Hindi glyphs, so falling
+# back to it renders every Hindi character as a solid black box.
 WINDOWS_FONT_DIR = Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts"
 NIRMALA_REGULAR = WINDOWS_FONT_DIR / "Nirmala.ttf"
 NIRMALA_BOLD = WINDOWS_FONT_DIR / "NirmalaB.ttf"
+
+# (file name, subfont index inside a .ttc collection or None) for regular / bold.
+# Windows 10/11 ship Nirmala UI only as the collection Nirmala.ttc
+# (index 0 = Nirmala UI Regular, 1 = Nirmala UI Bold).
+_FONT_CANDIDATES: list[tuple[tuple[str, int | None], tuple[str, int | None]]] = [
+    (("Nirmala.ttc", 0), ("Nirmala.ttc", 1)),
+    (("Nirmala.ttf", None), ("NirmalaB.ttf", None)),
+    (("mangal.ttf", None), ("mangalb.ttf", None)),
+    (("Mangal.ttf", None), ("Mangalb.ttf", None)),
+    (("aparaj.ttf", None), ("aparajb.ttf", None)),
+    (("kokila.ttf", None), ("kokilab.ttf", None)),
+    (("utsaah.ttf", None), ("utsaahb.ttf", None)),
+]
 
 FONT_REGISTERED = False
 ACTIVE_FONT = "Helvetica"
 ACTIVE_FONT_BOLD = "Helvetica-Bold"
 
-try:
-    if NIRMALA_REGULAR.exists():
-        pdfmetrics.registerFont(TTFont("NirmalaUI", str(NIRMALA_REGULAR)))
-        ACTIVE_FONT = "NirmalaUI"
-    if NIRMALA_BOLD.exists():
-        pdfmetrics.registerFont(TTFont("NirmalaUI-Bold", str(NIRMALA_BOLD)))
-        ACTIVE_FONT_BOLD = "NirmalaUI-Bold"
-    FONT_REGISTERED = True
-except Exception:
-    pass
+
+def _shaping_available() -> bool:
+    """Complex-script shaping (correct matra placement and conjuncts such as प्र,
+    क्ष) needs reportlab >= 4.1 plus the optional uharfbuzz package."""
+    try:
+        import uharfbuzz  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+SHAPING_ENABLED = _shaping_available()
+
+
+def _make_ttfont(name: str, path: Path, subfont: int | None) -> TTFont:
+    kwargs: dict[str, Any] = {}
+    if subfont is not None:
+        kwargs["subfontIndex"] = subfont
+    if SHAPING_ENABLED:
+        kwargs["shapable"] = True
+    try:
+        return TTFont(name, str(path), **kwargs)
+    except TypeError:  # older reportlab without 'shapable'
+        kwargs.pop("shapable", None)
+        return TTFont(name, str(path), **kwargs)
+
+
+def _register_devanagari_font() -> None:
+    global FONT_REGISTERED, ACTIVE_FONT, ACTIVE_FONT_BOLD
+    for (reg_file, reg_idx), (bold_file, bold_idx) in _FONT_CANDIDATES:
+        reg_path = WINDOWS_FONT_DIR / reg_file
+        if not reg_path.exists():
+            continue
+        try:
+            pdfmetrics.registerFont(_make_ttfont("HindiFont", reg_path, reg_idx))
+        except Exception:
+            continue
+        ACTIVE_FONT = "HindiFont"
+        ACTIVE_FONT_BOLD = "HindiFont"  # use regular weight if no bold face exists
+        bold_path = WINDOWS_FONT_DIR / bold_file
+        if bold_path.exists():
+            try:
+                pdfmetrics.registerFont(_make_ttfont("HindiFont-Bold", bold_path, bold_idx))
+                ACTIVE_FONT_BOLD = "HindiFont-Bold"
+            except Exception:
+                pass
+        FONT_REGISTERED = True
+        return
+
+
+
+_register_devanagari_font()
+
+
+# --- Devanagari visual ordering fallback --------------------------------------
+# Without a shaping engine reportlab draws glyphs strictly in logical order, so
+# the short-i matra (ि), which is typed AFTER its consonant cluster but written
+# BEFORE it, would print on the wrong side ("निकट" -> "नकिट"). When shaping is
+# unavailable we move ि in front of its whole consonant cluster (e.g. स्त्रि).
+_CONS = "[\u0915-\u0939\u0958-\u095F]\u093C?"
+_I_MATRA_RE = re.compile(f"((?:{_CONS}\u094D)*{_CONS})\u093F")
+
+
+def visual_order_devanagari(text: str) -> str:
+    if SHAPING_ENABLED or not text or "\u093F" not in text:
+        return text
+    return _I_MATRA_RE.sub(lambda m: "\u093F" + m.group(1), text)
+
+
+class Paragraph(_RLParagraph):
+    """reportlab Paragraph that applies the Devanagari ordering fallback."""
+
+    def __init__(self, text, *args, **kwargs):
+        super().__init__(visual_order_devanagari(str(text)), *args, **kwargs)
 
 
 class NumberedCanvas:
@@ -210,7 +290,7 @@ class PdfExporter:
                     Paragraph("<b>निकटतम प्रत्याशी (सूची A)</b>", cell_bold_style),
                     Paragraph("<b>पिता/पति (A)</b>", cell_bold_style),
                     Paragraph("<b>स्कोर %</b>", cell_bold_style),
-                    Paragraph("<b>सत्यापन [✓ / ✗]</b>", cell_bold_style),
+                    Paragraph("<b>सत्यापन (सही / गलत)</b>", cell_bold_style),
                     Paragraph("<b>कैफियत / हस्ताक्षर</b>", cell_bold_style),
                 ]
             ]

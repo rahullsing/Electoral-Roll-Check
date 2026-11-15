@@ -372,3 +372,24 @@ def test_column_suggestions_on_real_headers():
     assert sug["house_no"] == "मकान संख्या"
     assert sug["epic"] == "EPIC संख्या"
     assert sug["relative_name"] == "पिता/पति का नाम"
+
+
+def test_pdf_uses_devanagari_font_and_orders_i_matra(tmp_path):
+    """Regression: Windows ships Nirmala UI as Nirmala.ttc; falling back to
+    Helvetica printed every Hindi letter as a solid black box."""
+    from voter_match.export import pdf_export
+
+    if not any((pdf_export.WINDOWS_FONT_DIR / f).exists()
+               for (f, _), _b in pdf_export._FONT_CANDIDATES):
+        pytest.skip("no Devanagari system font on this machine")
+    assert pdf_export.FONT_REGISTERED
+    assert pdf_export.ACTIVE_FONT != "Helvetica"
+    if not pdf_export.SHAPING_ENABLED:
+        assert pdf_export.visual_order_devanagari("निकटतम") == "\u093fनकटतम"
+        assert pdf_export.visual_order_devanagari("स्त्रि") == "\u093fस्त्र"
+        assert pdf_export.visual_order_devanagari("राम") == "राम"
+    data = _small_session()
+    out = tmp_path / "r.pdf"
+    pdf_export.PdfExporter(data.session_result, data.mappings).export(out)
+    raw = out.read_bytes()
+    assert b"Helvetica" not in raw or b"HindiFont" in raw or b"Nirmala" in raw
