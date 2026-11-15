@@ -71,6 +71,43 @@ def exception_hook(exctype, value, tb):
     sys.__excepthook__(exctype, value, tb)
 
 
+def _run_self_check() -> None:
+    """Exercise every heavy dependency the app really uses, so a packaged exe
+    that is missing anything fails loudly instead of passing:
+    normalisation + transliteration, rapidfuzz blocking, scoring, SciPy 1-to-1
+    assignment, duplicate detection, Excel (openpyxl) and PDF (reportlab) export,
+    and the main window itself."""
+    import os
+    import tempfile
+
+    os.environ.setdefault("VOTER_MATCH_IN_MEMORY", "1")  # never touch the user's learning DB
+    from voter_match.core.duplicates import DuplicateDetector
+    from voter_match.core.learning import AliasManager
+    from voter_match.core.matcher import ElectoralRollMatcher
+    from voter_match.core.scorer import ColumnMapping
+    from voter_match.export.excel_export import ExcelExporter
+    from voter_match.export.pdf_export import PdfExporter
+
+    maps = [
+        ColumnMapping(role="voter_name", col_a="नाम", col_b="नाम"),
+        ColumnMapping(role="relative_name", col_a="पिता", col_b="पिता"),
+        ColumnMapping(role="age", col_a="आयु", col_b="आयु", importance="Medium", col_type="number"),
+    ]
+    a = [{"नाम": "सुनील कुमार", "पिता": "राम सेवक", "आयु": 35},
+         {"नाम": "शीला देवी", "पिता": "सुनील कुमार", "आयु": 32}]
+    b = [{"नाम": "सुनिल", "पिता": "रामसेवक", "आयु": 36},
+         {"नाम": "Sheela Devi", "पिता": "सुनील कुमार", "आयु": 32}]
+    res = ElectoralRollMatcher(maps, alias_manager=AliasManager()).run_matching(a, b)
+    if [r.assigned_a_idx for r in res.records_b] != [0, 1]:
+        raise RuntimeError(f"matching produced {[r.assigned_a_idx for r in res.records_b]}")
+    DuplicateDetector(voter_col="नाम", rel_col="पिता", age_col="आयु").find_duplicates(b + b)
+    with tempfile.TemporaryDirectory() as tmp:
+        ExcelExporter(res, maps).export(os.path.join(tmp, "check.xlsx"))
+        PdfExporter(res, maps).export(os.path.join(tmp, "check.pdf"))
+    window = MainWindow()
+    window.close()
+
+
 def main():
     # Set Windows App User Model ID so taskbar groups properly
     if sys.platform == "win32":
@@ -104,6 +141,11 @@ def main():
 
     # Allow automated self-check / headless launch verification
     if "--test-launch" in sys.argv or "--check" in sys.argv:
+        try:
+            _run_self_check()
+        except Exception as e:  # pragma: no cover - only fails in a broken build
+            print(f"Launch self-check FAILED: {type(e).__name__}: {e}")
+            return 1
         print("Launch self-check OK: App initialized successfully.")
         return 0
 

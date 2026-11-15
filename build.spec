@@ -83,7 +83,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib"],
+    # jinja2: only used by pandas DataFrame.style (never used here; not installed).
+    # scipy.special._cdflib: listed by PyInstaller's SciPy-1.13 hook, but SciPy >= 1.15
+    # no longer ships it as a separate module. Excluding both only silences
+    # "Hidden import not found" warnings; nothing the app uses is removed.
+    excludes=["tkinter", "matplotlib", "jinja2", "scipy.special._cdflib"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
