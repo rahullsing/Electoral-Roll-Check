@@ -30,7 +30,10 @@ from voter_match.core.matcher import MatchSessionResult
 from voter_match.core.scorer import ColumnMapping
 from voter_match.export.excel_export import ExcelExporter
 from voter_match.export.pdf_export import PdfExporter
+from voter_match.ui.i18n import mark_translatable
 from voter_match.ui.theme import (
+    fit_table_columns,
+    scoped_style,
     NAVY_PRIMARY,
     TEXT_DARK,
     GREEN_PRIMARY,
@@ -71,10 +74,10 @@ class CompactStatPill(QFrame):
         self.filter_key = filter_key
         self.setFrameShape(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(
-            f"QFrame {{ background-color: {bg_color}; border: 1.5px solid {border_color}; "
-            f"border-radius: 6px; padding: 2px 8px; }} "
-            f"QFrame:hover {{ border: 2px solid {text_color}; background-color: #FFFFFF; }}"
+        scoped_style(
+            self,
+            f"background-color: {bg_color}; border: 1.5px solid {border_color}; border-radius: 6px;",
+            hover_css=f"border: 2px solid {text_color}; background-color: #FFFFFF;",
         )
         self.setToolTip(f"{title}: {desc}\n👉 क्लिक करके केवल ये रिकॉर्ड्स देखें")
 
@@ -202,9 +205,7 @@ class ResultsPage(QWidget):
 
         # Criteria Filter and Search Toolbar (~34px)
         filter_bar = QFrame()
-        filter_bar.setStyleSheet(
-            "background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; padding: 3px 8px;"
-        )
+        scoped_style(filter_bar, "background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px;")
         fb_layout = QHBoxLayout(filter_bar)
         fb_layout.setContentsMargins(6, 2, 6, 2)
         fb_layout.setSpacing(8)
@@ -213,7 +214,7 @@ class ResultsPage(QWidget):
         lbl_crit.setStyleSheet("font-weight: bold; font-size: 11px; color: #1E293B;")
         fb_layout.addWidget(lbl_crit)
 
-        self.combo_criteria = QComboBox()
+        self.combo_criteria = mark_translatable(QComboBox())
         self.combo_criteria.setStyleSheet("font-size: 11px; padding: 2px 8px; font-weight: bold;")
         self.combo_criteria.addItem("📋 सभी परिणाम (All Results)", "all")
         self.combo_criteria.addItem("🟢 केवल मिला (Matched Only)", "मिला")
@@ -246,8 +247,9 @@ class ResultsPage(QWidget):
         main_layout.addWidget(filter_bar)
 
         # High-Contrast Results Table Preview taking 85%+ of screen height!
-        self.table_results = QTableWidget()
+        self.table_results = mark_translatable(QTableWidget())
         self.table_results.setAlternatingRowColors(True)
+        self.table_results.verticalHeader().setVisible(False)  # क्र० column already numbers rows
         self.table_results.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Guaranteed high-contrast stylesheet: Dark Navy Header with crisp bold white text
@@ -282,7 +284,7 @@ class ResultsPage(QWidget):
         only_a = self.session_result.stats.get("केवल सूची A में", 0)
 
         card_matched = CompactStatPill(
-            title="🟢 मिला (Matched)",
+            title="🟢 मिला",
             count=matched,
             percentage=f"{(matched/total_b)*100:.1f}%",
             desc="दोनों सूचियों में समान पाए गए मतदाता (पुष्टि हो चुकी)।",
@@ -294,7 +296,7 @@ class ResultsPage(QWidget):
         card_matched.clicked.connect(self.on_filter_pill_clicked)
 
         card_review = CompactStatPill(
-            title="🟡 जाँचें (Needs Review)",
+            title="🟡 जाँचें",
             count=review,
             percentage=f"{(review/total_b)*100:.1f}%",
             desc="मात्रा या वर्तनी का अंतर है। स्थलीय सत्यापन आवश्यक है।",
@@ -306,7 +308,7 @@ class ResultsPage(QWidget):
         card_review.clicked.connect(self.on_filter_pill_clicked)
 
         card_missing = CompactStatPill(
-            title="🔴 लापता (Missing)",
+            title="🔴 लापता",
             count=missing,
             percentage=f"{(missing/total_b)*100:.1f}%",
             desc="सूची B में उपलब्ध हैं किन्तु सूची A में नहीं मिले।",
@@ -318,9 +320,9 @@ class ResultsPage(QWidget):
         card_missing.clicked.connect(self.on_filter_pill_clicked)
 
         card_only_a = CompactStatPill(
-            title="🔵 केवल सूची A में",
+            title="🔵 केवल A में",
             count=only_a,
-            percentage="संदर्भ शेष",
+            percentage="",
             desc="संदर्भ सूची में हैं लेकिन सत्यापन सूची में नहीं मिले।",
             border_color="#3B82F6",
             bg_color="#EFF6FF",
@@ -330,9 +332,9 @@ class ResultsPage(QWidget):
         card_only_a.clicked.connect(self.on_filter_pill_clicked)
 
         card_total = CompactStatPill(
-            title="📋 कुल मतदाता (B)",
+            title="📋 कुल (B)",
             count=len(self.session_result.records_b),
-            percentage="100%",
+            percentage="",
             desc="सत्यापन सूची B में कुल मतदाता",
             border_color="#94A3B8",
             bg_color="#F8FAFC",
@@ -475,7 +477,7 @@ class ResultsPage(QWidget):
             self.lbl_filtered_count.setText(
                 f"दिखाए गए रिकॉर्ड्स: {len(filtered_indices):,} / {len(unmatched_indices):,}"
             )
-            self.table_results.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+            fit_table_columns(self.table_results)
             return
 
         # Normal List B Records Filtering (all, मिला, जाँचें, लापता)
@@ -609,7 +611,7 @@ class ResultsPage(QWidget):
         self.lbl_filtered_count.setText(
             f"दिखाए गए रिकॉर्ड्स: {len(filtered_recs):,} / {len(recs):,}"
         )
-        self.table_results.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        fit_table_columns(self.table_results)
 
     def export_excel(self) -> None:
         if not self.session_result:

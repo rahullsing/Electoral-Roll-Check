@@ -36,6 +36,16 @@ from voter_match.core.normalize import (
     DEFAULT_RULES_PATH,
 )
 from voter_match.core.learning import get_default_alias_manager
+from PySide6.QtWidgets import QFrame, QRadioButton
+from voter_match.ui.i18n import (
+    LANG_EN,
+    LANG_HI,
+    current_language,
+    on_language_changed,
+    set_language,
+    skip_translation,
+)
+from voter_match.ui.theme import scoped_style
 from voter_match.ui.theme import (
     NAVY_PRIMARY,
     TEXT_DARK,
@@ -60,9 +70,33 @@ class SettingsPage(QWidget):
         main_layout.setContentsMargins(15, 12, 15, 12)
         main_layout.setSpacing(12)
 
+        header_row = QHBoxLayout()
         header_lbl = QLabel("नियम एवं सिस्टम सेटिंग्स (System Settings & Indic Rules)")
         header_lbl.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {NAVY_PRIMARY};")
-        main_layout.addWidget(header_lbl)
+        header_row.addWidget(header_lbl)
+        header_row.addStretch()
+
+        # Interface language (always shown bilingually so anyone can find it)
+        lang_box = QFrame()
+        scoped_style(lang_box, "background-color: #EFF6FF; border: 2px solid #1E3A8A; border-radius: 8px;")
+        lb = QHBoxLayout(lang_box)
+        lb.setContentsMargins(12, 6, 12, 6)
+        lb.setSpacing(10)
+        lbl_lang = skip_translation(QLabel("🌐 भाषा / Language:"))
+        lbl_lang.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {NAVY_PRIMARY};")
+        lb.addWidget(lbl_lang)
+        self.radio_hi = skip_translation(QRadioButton("हिंदी"))
+        self.radio_en = skip_translation(QRadioButton("English"))
+        for r in (self.radio_hi, self.radio_en):
+            r.setStyleSheet("font-size: 14px; font-weight: bold;")
+            lb.addWidget(r)
+        self.radio_en.setChecked(current_language() == LANG_EN)
+        self.radio_hi.setChecked(current_language() != LANG_EN)
+        self.radio_hi.toggled.connect(lambda on: on and set_language(LANG_HI))
+        self.radio_en.toggled.connect(lambda on: on and set_language(LANG_EN))
+        on_language_changed(self._sync_language_radios)
+        header_row.addWidget(lang_box)
+        main_layout.addLayout(header_row)
 
         # Tab Widget
         tabs = QTabWidget()
@@ -256,6 +290,13 @@ class SettingsPage(QWidget):
                 item = QTableWidgetItem(text)
                 item.setForeground(QBrush(dark_text))
                 self.table_rules.setItem(idx, col_i, item)
+
+    def _sync_language_radios(self, lang: str) -> None:
+        for r, want in ((self.radio_en, lang == LANG_EN), (self.radio_hi, lang != LANG_EN)):
+            if r.isChecked() != want:
+                r.blockSignals(True)
+                r.setChecked(want)
+                r.blockSignals(False)
 
     def set_threshold_values(self, m: float, r: float) -> None:
         """Move the sliders to new values (e.g. accepted accuracy suggestion)."""

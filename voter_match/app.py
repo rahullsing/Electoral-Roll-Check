@@ -107,8 +107,12 @@ def main():
         print("Launch self-check OK: App initialized successfully.")
         return 0
 
+    from voter_match.ui import i18n
+
+    i18n.install()  # loads the saved language (हिंदी / English)
     window = MainWindow()
     window.show()
+    i18n.set_language(i18n.current_language(), persist=False)
 
     return app.exec()
 

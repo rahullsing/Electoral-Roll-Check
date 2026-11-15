@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+from voter_match.ui.i18n import mark_translatable
 from voter_match.storage.session_manager import (
     SavedSessionData,
     get_default_session_manager,
@@ -80,9 +81,9 @@ class SaveSessionDialog(QDialog):
 
         # Quick stats preview box
         stats_box = QFrame()
-        stats_box.setStyleSheet(
-            "background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 8px 12px;"
-        )
+        from voter_match.ui.theme import scoped_style
+
+        scoped_style(stats_box, "background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px;")
         sb_layout = QVBoxLayout(stats_box)
         sb_layout.setSpacing(4)
 
@@ -217,6 +218,7 @@ class OpenSessionDialog(QDialog):
 
         # Sessions Table
         self.table_sessions = QTableWidget()
+        mark_translatable(self.table_sessions)  # session ID column is ASCII, never translated
         self.table_sessions.setColumnCount(6)
         self.table_sessions.setHorizontalHeaderLabels([
             "सत्र शीर्षक",

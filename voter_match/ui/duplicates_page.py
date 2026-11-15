@@ -26,7 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 from voter_match.core.duplicates import DuplicateDetector, DuplicateCluster, HouseholdGroup
+from voter_match.ui.i18n import mark_translatable
 from voter_match.ui.theme import (
+    fit_table_columns,
+    scoped_style,
     NAVY_PRIMARY,
     TEXT_DARK,
     GREEN_PRIMARY,
@@ -58,9 +61,10 @@ class DuplicatesPage(QWidget):
 
         # Guidance Banner
         help_card = QFrame()
-        help_card.setStyleSheet(
+        scoped_style(
+            help_card,
             f"background-color: #FFFFFF; border: 1px solid #BFDBFE; "
-            f"border-left: 5px solid {NAVY_PRIMARY}; border-radius: 6px; padding: 8px 12px;"
+            f"border-left: 5px solid {NAVY_PRIMARY}; border-radius: 6px;",
         )
         hc_layout = QHBoxLayout(help_card)
         hc_layout.setContentsMargins(6, 4, 6, 4)
@@ -76,7 +80,7 @@ class DuplicatesPage(QWidget):
 
         # Control Bar
         ctrl_bar = QFrame()
-        ctrl_bar.setStyleSheet("background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px; padding: 6px 12px;")
+        scoped_style(ctrl_bar, "background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px;")
         ctrl_box = QHBoxLayout(ctrl_bar)
         ctrl_box.setContentsMargins(6, 4, 6, 4)
 
@@ -86,6 +90,7 @@ class DuplicatesPage(QWidget):
 
         self.combo_target_list = QComboBox()
         self.combo_target_list.addItems(["सूची B (सत्यापन सूची)", "सूची A (संदर्भ सूची)"])
+        mark_translatable(self.combo_target_list)  # index 0 = List B
         ctrl_box.addWidget(self.combo_target_list)
 
         self.btn_run_dup = QPushButton("🔍 डुप्लिकेट खोजें (Find Duplicates)")
@@ -125,13 +130,13 @@ class DuplicatesPage(QWidget):
         )
 
         # TAB 1: Duplicates
-        self.table_duplicates = QTableWidget()
+        self.table_duplicates = mark_translatable(QTableWidget())
         self.table_duplicates.setAlternatingRowColors(True)
         self.table_duplicates.setStyleSheet(table_qss)
         self.tabs.addTab(self.table_duplicates, "⚠️ संभावित डुप्लिकेट मतदाता")
 
         # TAB 2: Households
-        self.table_households = QTableWidget()
+        self.table_households = mark_translatable(QTableWidget())
         self.table_households.setAlternatingRowColors(True)
         self.table_households.setStyleSheet(table_qss)
         self.tabs.addTab(self.table_households, "🏠 पारिवारिक / मकान क्लस्टर")
@@ -145,7 +150,7 @@ class DuplicatesPage(QWidget):
         self.cols_b = cols_b
 
     def run_duplicate_detection(self) -> None:
-        use_b = "सूची B" in self.combo_target_list.currentText()
+        use_b = self.combo_target_list.currentIndex() == 0
         records = self.records_b if use_b else self.records_a
         cols = self.cols_b if use_b else self.cols_a
 
@@ -187,12 +192,12 @@ class DuplicatesPage(QWidget):
                     self.table_duplicates.setItem(row_idx, c_i, item)
                 row_idx += 1
 
-        self.table_duplicates.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        fit_table_columns(self.table_duplicates)
         self.tabs.setCurrentIndex(0)
         QMessageBox.information(self, "सफल", f"कुल {len(self.clusters)} संभावित डुप्लिकेट समूह मिले।")
 
     def run_household_grouping(self) -> None:
-        use_b = "सूची B" in self.combo_target_list.currentText()
+        use_b = self.combo_target_list.currentIndex() == 0
         records = self.records_b if use_b else self.records_a
         cols = self.cols_b if use_b else self.cols_a
 
@@ -237,7 +242,7 @@ class DuplicatesPage(QWidget):
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table_households.setItem(idx, c_i, item)
 
-        self.table_households.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        fit_table_columns(self.table_households)
         self.tabs.setCurrentIndex(1)
         QMessageBox.information(self, "सफल", f"कुल {len(self.households)} पारिवारिक/मकान क्लस्टर तैयार किए गए।")
 

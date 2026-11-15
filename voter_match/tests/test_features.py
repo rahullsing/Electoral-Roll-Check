@@ -56,25 +56,56 @@ def _rec(i, name, rel, age=30, **kw):
 # ---------------------------------------------------------------- performance
 
 def test_sparse_assignment_matches_dense_optimum():
+    """Per-component solve == dense solve of the confidence objective."""
     rng = np.random.default_rng(42)
     for _ in range(150):
         nb, na = int(rng.integers(3, 40)), int(rng.integers(3, 40))
         edges = {}
         for _ in range(int(rng.integers(1, nb * 3))):
             edges[(int(rng.integers(nb)), int(rng.integers(na)))] = float(np.round(rng.uniform(0.5, 1.0), 4))
-        dense = np.full((nb, na), 2.0)
-        for (b, a), s in edges.items():
-            if s >= 0.55:
-                dense[b, a] = 1 - s
+        dense = np.zeros((nb, na))
+        for (b, a), s_ in edges.items():
+            if s_ >= 0.55:
+                dense[b, a] = -(s_ - 0.55 + 1e-6)
         r, c = linear_sum_assignment(dense)
-        d_pairs = {int(x): int(y) for x, y in zip(r, c) if dense[x, y] <= 0.45}
-        sp = solve_sparse_assignment(((b, a, s) for (b, a), s in edges.items()), 0.55)
+        d_pairs = {int(x): int(y) for x, y in zip(r, c) if dense[x, y] < 0}
+        sp = solve_sparse_assignment(((b, a, s_) for (b, a), s_ in edges.items()), 0.55)
 
         def objective(p):
-            return len(p) + sum(edges[(b, a)] for b, a in p.items())
+            return sum(edges[(b, a)] - 0.55 for b, a in p.items())
 
-        assert objective(sp) == pytest.approx(objective(d_pairs))
+        assert objective(sp) == pytest.approx(objective(d_pairs), abs=1e-4)
         assert len(set(sp.values())) == len(sp)  # strictly 1-to-1
+
+
+def test_assignment_never_breaks_a_strong_match_for_weak_ones():
+    """Regression: the old objective maximised the NUMBER of pairs, so it gave
+    away a 100% match to form two weak pairs, marking a real match missing."""
+    edges = [(0, 0, 1.00), (0, 1, 0.60), (1, 0, 0.56)]
+    assert solve_sparse_assignment(edges, 0.55) == {0: 0}
+
+
+def test_strong_candidate_taken_elsewhere_goes_to_review_not_missing():
+    from voter_match.core.matcher import classify_tier
+    from voter_match.core.scorer import ScoreResult
+
+    weak = ScoreResult(score=0.60, voter_name_sim=0.6, relative_name_sim=0.6)
+    tier = classify_tier(weak, True, 0.98, False, 0.90, 0.72, 0.90, 0.80, True)
+    assert tier == "जाँचें"
+
+
+def test_big_age_gap_is_never_auto_matched():
+    m = _mappings()
+    a = [_rec(1, "संजय", "ईश्वर दयाल", 64)]
+    b = [_rec(1, "संजय", "ईश्वर दयाल", 36)]
+    res = ElectoralRollMatcher(m, alias_manager=AliasManager()).run_matching(a, b)
+    rec = res.records_b[0]
+    assert rec.best_score_result.age_conflict
+    assert rec.tier == "जाँचें"
+    # a small gap within tolerance still matches automatically
+    b2 = [_rec(1, "संजय", "ईश्वर दयाल", 65)]
+    res2 = ElectoralRollMatcher(m, alias_manager=AliasManager()).run_matching(a, b2)
+    assert res2.records_b[0].tier == "मिला"
 
 
 def test_vectorized_blocking_equals_rowwise_extract():
@@ -393,3 +424,87 @@ def test_pdf_uses_devanagari_font_and_orders_i_matra(tmp_path):
     pdf_export.PdfExporter(data.session_result, data.mappings).export(out)
     raw = out.read_bytes()
     assert b"Helvetica" not in raw or b"HindiFont" in raw or b"Nirmala" in raw
+
+
+# ---------------------------------------------------------------- language switching
+
+def test_i18n_translates_static_dynamic_and_composite_text():
+    from voter_match.ui.i18n import translate
+
+    assert translate("🔍 त्वरित खोज") == "🔍 Quick Search"
+    assert translate("मिलान पूर्ण! मिला: 384, जाँचें: 104, लापता: 219") == \
+        "Matching complete! Matched: 384, Review: 104, Missing: 219"
+    # nested: template whose variable part is itself a translatable phrase
+    assert translate("मतदाता का नाम: समान (पूर्ण समान (Exact))") == "Voter Name: same (Exact)"
+    # composite reasons joined with '; ' are translated piece by piece
+    joined = "मतदाता का नाम: कम समानता (74%); पिता/पति/माता का नाम: कम समानता (56%)"
+    assert translate(joined) == "Voter Name: low similarity (74%); Father/Husband/Mother name: low similarity (56%)"
+    # voter data is never altered
+    assert translate("सुनील कुमार") == "सुनील कुमार"
+    assert translate("1349") == "1349"
+
+
+def test_i18n_switch_and_restore_widgets(qapp_or_skip):
+    from PySide6.QtWidgets import QComboBox, QLabel, QPushButton, QVBoxLayout, QWidget
+    from voter_match.ui import i18n
+
+    root = QWidget()
+    lay = QVBoxLayout(root)
+    lbl = QLabel("मिलान पूर्ण!")
+    btn = QPushButton("⚙️ सेटिंग्स")
+    combo = i18n.mark_translatable(QComboBox())
+    combo.addItem("सभी मतदाता", "all")
+    plain_combo = QComboBox()
+    plain_combo.addItem("आयु")  # a data column named like a UI word must NOT change
+    for w in (lbl, btn, combo, plain_combo):
+        lay.addWidget(w)
+    try:
+        i18n.set_language(i18n.LANG_EN, persist=False)
+        i18n.apply_to(root, visible_only=False)
+        assert lbl.text() == "Matching complete!"
+        assert btn.text() == "⚙️ Settings"
+        assert combo.itemText(0) == "All voters" and combo.itemData(0) == "all"
+        assert plain_combo.itemText(0) == "आयु"
+        # text changed by the app while in English mode becomes the new original
+        lbl.setText("सत्यापित: 0 | शेष: 0")
+        i18n.apply_to(root, visible_only=False)
+        i18n.set_language(i18n.LANG_HI, persist=False)
+        i18n.apply_to(root, visible_only=False)
+        assert lbl.text() == "सत्यापित: 0 | शेष: 0"
+        assert btn.text() == "⚙️ सेटिंग्स"
+        assert combo.itemText(0) == "सभी मतदाता"
+    finally:
+        i18n.set_language(i18n.LANG_HI, persist=False)
+
+
+def test_i18n_covers_every_ui_string():
+    """Every Hindi literal shown by the UI has an English translation (or is a
+    deliberate data keyword). Guards against new untranslated UI text."""
+    import ast
+    import re
+    from voter_match.ui.i18n import translate
+
+    dev = re.compile(r"[\u0900-\u097F]")
+    ui_dir = PROJECT_ROOT / "voter_match" / "ui"
+    # Hindi literals that are data/keywords or file names, not UI text
+    allowed = {"_क्लस्टर_ID", "_समानता_स्कोर", "नाम", "पिता", "पति", "माता", "गृह", "बैच_मिलान_रिपोर्ट"}
+    # The language switch itself is deliberately bilingual so anyone can find it
+    allowed |= {"हिंदी", "🌐 हिंदी", "🌐 भाषा / Language:", "भाषा बदलें / Change language (हिंदी ⇄ English)"}
+    missing = []
+    for f in ui_dir.glob("*.py"):
+        if f.name.startswith("i18n"):
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        docs = {id(n.body[0].value) for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef)) and n.body
+                and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+        inner = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for v in n.values}
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
+                    and id(n) not in inner and dev.search(n.value)):
+                s = n.value
+                if s in allowed or s.endswith((".xlsx", ".pdf")):
+                    continue
+                if translate(s) == s:
+                    missing.append(f"{f.name}: {s!r}")
+    assert not missing, "Untranslated UI strings:\n" + "\n".join(sorted(set(missing)))

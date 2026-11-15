@@ -34,6 +34,7 @@ from voter_match.core.matcher import MatchRecordB, MatchCandidate, MatchSessionR
 from voter_match.core.scorer import ColumnMapping
 from voter_match.storage.db import get_default_storage
 from voter_match.core.learning import get_default_alias_manager, make_record_key
+from voter_match.ui.i18n import mark_translatable
 from voter_match.ui.tts import get_speaker, HINDI_VOICE_HELP
 from voter_match.export.excel_export import ExcelExporter
 from voter_match.ui.theme import (
@@ -49,6 +50,7 @@ from voter_match.ui.theme import (
     RED_TEXT,
     RED_PRIMARY,
     BORDER_COLOR,
+    scoped_style,
 )
 
 COMMON_FIELD_REMARKS = [
@@ -64,6 +66,20 @@ COMMON_FIELD_REMARKS = [
 
 
 UNDO_LIMIT = 300
+
+# Hindi labels for the detail line (instead of internal role keys like 'house_no')
+ROLE_LABELS = {
+    "serial_no": "क्र०",
+    "epic": "EPIC",
+    "age": "आयु",
+    "gender": "लिंग",
+    "house_no": "मकान",
+    "ward": "वार्ड/भाग",
+}
+
+
+def role_label(role: str) -> str:
+    return ROLE_LABELS.get(role, role)
 
 
 @dataclass
@@ -143,10 +159,7 @@ class CandidateCardWidget(QFrame):
         self.setFrameShape(QFrame.StyledPanel)
         card_border = "#16A34A" if self.is_selected else BORDER_COLOR
         card_bg = "#F0FDF4" if self.is_selected else "#FFFFFF"
-        self.setStyleSheet(
-            f"QFrame {{ border: 2px solid {card_border}; border-radius: 6px; "
-            f"background-color: {card_bg}; padding: 6px; }}"
-        )
+        scoped_style(self, f"border: 2px solid {card_border}; border-radius: 6px; background-color: {card_bg};")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -219,7 +232,7 @@ class CandidateCardWidget(QFrame):
                 continue
             val = str(rec_a.get(m.col_a, "") or "")
             if val:
-                details_list.append(f"<b>{m.role}:</b> {val}")
+                details_list.append(f"<b>{role_label(m.role)}:</b> {val}")
 
         if details_list:
             lbl_det = QLabel(" | ".join(details_list))
@@ -274,8 +287,11 @@ class ReviewPage(QWidget):
         top_bar.addWidget(lbl_step)
 
         self.combo_tier = QComboBox()
-        self.combo_tier.addItems(["जाँचें (सत्यापन आवश्यक)", "सभी मतदाता", "लापता", "मिला"])
-        self.combo_tier.setCurrentText("जाँचें (सत्यापन आवश्यक)")
+        for text, key in (("जाँचें (सत्यापन आवश्यक)", "जाँचें"), ("सभी मतदाता", "all"),
+                          ("लापता", "लापता"), ("मिला", "मिला")):
+            self.combo_tier.addItem(text, key)
+        self.combo_tier.setCurrentIndex(0)
+        mark_translatable(self.combo_tier)
         self.combo_tier.currentIndexChanged.connect(self.apply_filter)
         top_bar.addWidget(self.combo_tier)
 
@@ -373,8 +389,12 @@ class ReviewPage(QWidget):
         layout_b.addWidget(lbl_rem_title)
 
         self.combo_remarks = QComboBox()
-        self.combo_remarks.addItems(COMMON_FIELD_REMARKS)
-        self.combo_remarks.currentTextChanged.connect(self.on_remark_selected)
+        for remark in COMMON_FIELD_REMARKS:
+            self.combo_remarks.addItem(remark, remark)  # data keeps the Hindi text for reports
+        self.combo_remarks.currentIndexChanged.connect(
+            lambda _i: self.on_remark_selected(self.combo_remarks.currentData() or "")
+        )
+        mark_translatable(self.combo_remarks)
         layout_b.addWidget(self.combo_remarks)
 
         self.txt_custom_note = QLineEdit()
@@ -525,7 +545,7 @@ class ReviewPage(QWidget):
             )
 
     def apply_filter(self) -> None:
-        tier_filter = self.combo_tier.currentText()
+        tier_filter = self.combo_tier.currentData() or "all"
         query = self.txt_search.text().strip().lower()
         unreviewed_only = self.chk_unreviewed_only.isChecked()
 
@@ -534,11 +554,7 @@ class ReviewPage(QWidget):
             if unreviewed_only and rec.user_decision is not None:
                 continue
 
-            if "जाँचें" in tier_filter and rec.tier != "जाँचें":
-                continue
-            if "लापता" in tier_filter and rec.tier != "लापता":
-                continue
-            if "मिला" in tier_filter and rec.tier != "मिला":
+            if tier_filter != "all" and rec.tier != tier_filter:
                 continue
 
             if query:
@@ -601,7 +617,7 @@ class ReviewPage(QWidget):
                 continue
             val = str(rec_b.get(m.col_b, "") or "")
             if val:
-                details_list.append(f"<b>{m.role}:</b> {val}")
+                details_list.append(f"<b>{role_label(m.role)}:</b> {val}")
 
         self.lbl_b_details.setText(" | ".join(details_list) if details_list else "-")
         self.lbl_b_details.setTextFormat(Qt.RichText)

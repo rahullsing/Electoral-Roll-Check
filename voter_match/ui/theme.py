@@ -5,6 +5,8 @@ Guarantees high contrast, clear Hindi Devanagari typography, explicit text and b
 to prevent white-on-white rendering bugs, and friendly visual status cues.
 """
 
+from PySide6.QtCore import Qt
+
 # Color Palette: Deep Navy Authority + High-Contrast Accents
 NAVY_PRIMARY = "#1E3A8A"      # Deep Navy Blue (Headers & Primary Action)
 NAVY_HOVER = "#1E40AF"
@@ -31,6 +33,62 @@ RED_HOVER = "#B91C1C"
 BLUE_BG = "#DBEAFE"           # Soft Info Blue
 BLUE_TEXT = "#1E40AF"
 
+def rgba(hex_color: str, alpha: float) -> str:
+    """CSS rgba() from '#RRGGBB'. (Qt reads 8-digit hex as #AARRGGBB, so
+    appending an alpha suffix like '#DC262618' produces the wrong colour.)"""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha:.2f})"
+
+
+_scope_counter = 0
+
+
+def scoped_style(widget, css: str, hover_css: str | None = None) -> None:
+    """Apply css to this widget ONLY.
+
+    A selector-less stylesheet (or a 'QFrame { }' rule) on a container also
+    styles every child QLabel - QLabel is a QFrame subclass - which drew a
+    border, padding and background box around every label inside cards.
+    Scoping the rule to the widget's own objectName prevents that.
+    """
+    global _scope_counter
+    name = widget.objectName()
+    if not name:
+        _scope_counter += 1
+        name = f"scoped{_scope_counter}"
+        widget.setObjectName(name)
+    sheet = f"#{name} {{ {css} }}"
+    if hover_css:
+        sheet += f" #{name}:hover {{ {hover_css} }}"
+    widget.setStyleSheet(sheet)
+
+
+def fit_table_columns(table, max_col_width: int = 280) -> None:
+    """Fit columns to content but let the LAST (long text) column take the
+    remaining width (elided, full text on hover) instead of forcing a wide
+    horizontal scroll. Very wide content columns are capped."""
+    from PySide6.QtWidgets import QHeaderView
+
+    hdr = table.horizontalHeader()
+    n = table.columnCount()
+    if n == 0:
+        return
+    hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
+    table.resizeColumnsToContents()
+    for c in range(n - 1):
+        hdr.setSectionResizeMode(c, QHeaderView.Interactive)
+        if table.columnWidth(c) > max_col_width:
+            table.setColumnWidth(c, max_col_width)
+    hdr.setSectionResizeMode(n - 1, QHeaderView.Stretch)
+    table.setTextElideMode(Qt.ElideRight)
+    for r in range(table.rowCount()):
+        for c in range(n):
+            it = table.item(r, c)
+            if it is not None and not it.toolTip() and len(it.text()) > 25:
+                it.setToolTip(it.text())
+
+
 GLOBAL_QSS = f"""
 /* Universal Window & Typography */
 QWidget {{
@@ -38,6 +96,11 @@ QWidget {{
     font-size: 13px;
     color: {TEXT_DARK};
     background-color: #F8FAFC;
+}}
+
+/* Labels and check boxes sit on whatever card they are placed in */
+QLabel, QCheckBox, QRadioButton {{
+    background-color: transparent;
 }}
 
 /* Main Containers & Cards */

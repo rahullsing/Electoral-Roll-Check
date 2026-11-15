@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from voter_match.core.scorer import ColumnMapping, IMPORTANCE_WEIGHTS
 from voter_match.core.column_suggest import ROLE_KEYWORDS, column_role_score, suggest_columns
 from voter_match.storage.db import get_default_storage
+from voter_match.ui.i18n import mark_translatable, tr
 from voter_match.ui.theme import (
     NAVY_PRIMARY,
     TEXT_DARK,
@@ -39,6 +40,8 @@ from voter_match.ui.theme import (
     BORDER_COLOR,
     AMBER_BG,
     AMBER_TEXT,
+    rgba,
+    scoped_style,
 )
 
 STANDARD_ROLES = [
@@ -151,18 +154,15 @@ class RoleCardWidget(QFrame):
         self.badge_color = badge_color
         self.col_type = col_type
         self.default_importance = default_importance
-        self.cols_a = ["-- चयन न करें --"] + cols_a
-        self.cols_b = ["-- चयन न करें --"] + cols_b
+        self.cols_a = [tr("-- चयन न करें --")] + cols_a
+        self.cols_b = [tr("-- चयन न करें --")] + cols_b
         self.sample_rec_a = sample_rec_a or {}
         self.sample_rec_b = sample_rec_b or {}
         self.init_ui()
 
     def init_ui(self) -> None:
         self.setFrameShape(QFrame.StyledPanel)
-        self.setStyleSheet(
-            f"QFrame {{ background-color: #FFFFFF; border: 1px solid {BORDER_COLOR}; "
-            f"border-radius: 6px; padding: 6px 10px; }}"
-        )
+        scoped_style(self, f"background-color: #FFFFFF; border: 1px solid {BORDER_COLOR}; border-radius: 6px;")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 5, 8, 5)
@@ -179,8 +179,9 @@ class RoleCardWidget(QFrame):
 
         lbl_badge = QLabel(f" {self.badge_text} ")
         lbl_badge.setStyleSheet(
-            f"background-color: {self.badge_color}18; color: {self.badge_color}; "
-            f"border: 1px solid {self.badge_color}50; border-radius: 4px; font-size: 10px; font-weight: bold;"
+            f"background-color: {rgba(self.badge_color, 0.10)}; color: {self.badge_color}; "
+            f"border: 1px solid {rgba(self.badge_color, 0.35)}; border-radius: 4px; font-size: 10px; "
+            f"font-weight: bold; padding: 1px 6px;"
         )
         top_row.addWidget(lbl_badge)
         top_row.addStretch()
@@ -258,7 +259,7 @@ class RoleCardWidget(QFrame):
 
         # Importance Selector
         grid.addWidget(QLabel("महत्व (Importance):"), 0, 4)
-        self.combo_importance = QComboBox()
+        self.combo_importance = mark_translatable(QComboBox())
         for key, val in IMPORTANCE_OPTIONS:
             self.combo_importance.addItem(val, key)
         # Select default
@@ -296,7 +297,7 @@ class RoleCardWidget(QFrame):
         col_a = self.combo_a.currentText()
         col_b = self.combo_b.currentText()
 
-        if col_a and col_a != "-- चयन न करें --" and col_a in self.sample_rec_a:
+        if col_a and self.combo_a.currentIndex() > 0 and col_a in self.sample_rec_a:
             val_a = str(self.sample_rec_a.get(col_a, "") or "")
             self.lbl_sample_a.setText(f"✓ सूची A पहली पंक्ति: \"{val_a}\"")
             self.lbl_sample_a.setStyleSheet("color: #166534; font-size: 11px; font-weight: bold;")
@@ -304,7 +305,7 @@ class RoleCardWidget(QFrame):
             self.lbl_sample_a.setText("नमूना मान (A): -")
             self.lbl_sample_a.setStyleSheet("color: #94A3B8; font-size: 11px;")
 
-        if col_b and col_b != "-- चयन न करें --" and col_b in self.sample_rec_b:
+        if col_b and self.combo_b.currentIndex() > 0 and col_b in self.sample_rec_b:
             val_b = str(self.sample_rec_b.get(col_b, "") or "")
             self.lbl_sample_b.setText(f"✓ सूची B पहली पंक्ति: \"{val_b}\"")
             self.lbl_sample_b.setStyleSheet("color: #166534; font-size: 11px; font-weight: bold;")
@@ -317,8 +318,9 @@ class RoleCardWidget(QFrame):
         col_b = self.combo_b.currentText()
         imp_key = self.combo_importance.currentData() or self.default_importance
 
-        final_a = col_a if col_a != "-- चयन न करें --" else None
-        final_b = col_b if col_b != "-- चयन न करें --" else None
+        # index 0 is the "not selected" placeholder (its text may be translated)
+        final_a = col_a if self.combo_a.currentIndex() > 0 else None
+        final_b = col_b if self.combo_b.currentIndex() > 0 else None
         tol = self.spin_tol.value() if self.spin_tol else 3
 
         return ColumnMapping(
@@ -406,9 +408,7 @@ class MappingPage(QWidget):
 
         # Compact Profile Selection & Ward Filter Bar (~36px height)
         profile_bar = QFrame()
-        profile_bar.setStyleSheet(
-            "background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; padding: 4px 8px;"
-        )
+        scoped_style(profile_bar, "background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px;")
         pb_layout = QHBoxLayout(profile_bar)
         pb_layout.setContentsMargins(6, 2, 6, 2)
         pb_layout.setSpacing(8)
@@ -497,7 +497,7 @@ class MappingPage(QWidget):
         # Check for saved profile match
         matched_prof = self.storage.find_matching_profile(cols_a, cols_b)
         if matched_prof:
-            self.combo_profile.setCurrentText(matched_prof)
+            self._select_profile(matched_prof)
             self.load_selected_profile()
         else:
             self.auto_suggest()
@@ -529,11 +529,21 @@ class MappingPage(QWidget):
     def refresh_profiles(self) -> None:
         self.combo_profile.clear()
         profs = self.storage.list_profiles()
-        self.combo_profile.addItems(profs if profs else ["-- कोई प्रोफ़ाइल नहीं --"])
+        if profs:
+            for name in profs:
+                self.combo_profile.addItem(name, name)  # data = real profile name
+        else:
+            self.combo_profile.addItem("-- कोई प्रोफ़ाइल नहीं --", None)
+        mark_translatable(self.combo_profile)
+
+    def _select_profile(self, name: str) -> None:
+        idx = self.combo_profile.findData(name)
+        if idx >= 0:
+            self.combo_profile.setCurrentIndex(idx)
 
     def load_selected_profile(self) -> None:
-        p_name = self.combo_profile.currentText()
-        if not p_name or p_name.startswith("--"):
+        p_name = self.combo_profile.currentData()
+        if not p_name:
             return
         mappings = self.storage.get_profile(p_name)
         if not mappings:
@@ -552,7 +562,7 @@ class MappingPage(QWidget):
         mappings = [c.get_mapping() for c in self.role_cards]
         self.storage.save_profile(name.strip(), mappings)
         self.refresh_profiles()
-        self.combo_profile.setCurrentText(name.strip())
+        self._select_profile(name.strip())
         QMessageBox.information(self, "सफल", f"प्रोफ़ाइल '{name.strip()}' सफलतापूर्वक सहेजी गई!")
 
     def on_start_matching(self) -> None:

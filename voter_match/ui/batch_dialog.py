@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from voter_match.core.batch import BatchJob, run_batch
 from voter_match.core.scorer import ColumnMapping
+from voter_match.ui.i18n import mark_translatable
 from voter_match.ui.theme import GREEN_PRIMARY, NAVY_PRIMARY
 
 FILE_FILTER = "Excel / CSV Files (*.xlsx *.xls *.csv);;All Files (*.*)"
@@ -107,7 +108,7 @@ class BatchDialog(QDialog):
         bar.addStretch()
         layout.addLayout(bar)
 
-        self.table = QTableWidget(0, 3)
+        self.table = mark_translatable(QTableWidget(0, 3))  # label column holds file stems
         self.table.setHorizontalHeaderLabels(["भाग / बूथ नाम", "सूची A (संदर्भ) फ़ाइल", "सूची B (सत्यापन) फ़ाइल"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)

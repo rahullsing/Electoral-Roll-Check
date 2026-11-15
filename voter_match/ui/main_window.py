@@ -50,7 +50,17 @@ from voter_match.storage.session_manager import (
 )
 from voter_match.ui.session_dialog import SaveSessionDialog, OpenSessionDialog
 from voter_match.ui.batch_dialog import BatchDialog
-from voter_match.ui.theme import GLOBAL_QSS, NAVY_PRIMARY
+from voter_match.ui.i18n import (
+    LANG_EN,
+    LANG_HI,
+    apply_to,
+    current_language,
+    on_language_changed,
+    skip_translation,
+    set_language,
+    tr,
+)
+from voter_match.ui.theme import GLOBAL_QSS, NAVY_PRIMARY, scoped_style
 
 # Setup local file logging safely
 LOG_DIR = APP_DATA_DIR / "logs"
@@ -175,7 +185,7 @@ class MainWindow(QMainWindow):
 
         # Top Application Banner
         banner = QFrame()
-        banner.setStyleSheet("background-color: #1F4E79; color: white; padding: 4px;")
+        scoped_style(banner, "background-color: #1F4E79;")
         banner_layout = QHBoxLayout(banner)
         banner_layout.setContentsMargins(15, 6, 15, 6)
 
@@ -220,6 +230,18 @@ class MainWindow(QMainWindow):
         banner_layout.addWidget(self.btn_batch)
 
         # Offline & Security Badge
+        # One-click language toggle (label always names the OTHER language)
+        self.btn_lang = skip_translation(QPushButton())
+        self.btn_lang.setStyleSheet(
+            "background-color: #FFFFFF; color: #1E3A8A; font-weight: bold; "
+            "padding: 5px 12px; border-radius: 5px; font-size: 12px; border: 2px solid #93C5FD;"
+        )
+        self.btn_lang.setToolTip("भाषा बदलें / Change language (हिंदी ⇄ English)")
+        self.btn_lang.clicked.connect(self.toggle_language)
+        banner_layout.addWidget(self.btn_lang)
+        self._update_lang_button(current_language())
+        on_language_changed(self._on_language_changed)
+
         badge_lbl = QLabel("🛡️ 100% ऑफलाइन (डेटा सुरक्षित)")
         badge_lbl.setStyleSheet(
             "background-color: #16A34A; color: white; font-weight: bold; "
@@ -232,7 +254,7 @@ class MainWindow(QMainWindow):
 
         # Workflow Navigation Bar (Step-by-Step for Teachers)
         nav_bar = QFrame()
-        nav_bar.setStyleSheet("background-color: #E2E8F0; border-bottom: 2px solid #CBD5E1;")
+        scoped_style(nav_bar, "background-color: #E2E8F0; border-bottom: 2px solid #CBD5E1;")
         self.nav_layout = QHBoxLayout(nav_bar)
         self.nav_layout.setContentsMargins(10, 6, 10, 6)
         self.nav_layout.setSpacing(6)
@@ -266,7 +288,7 @@ class MainWindow(QMainWindow):
 
         # Progress Bar Panel (Hidden by default, shown during matching)
         self.progress_panel = QFrame()
-        self.progress_panel.setStyleSheet("background-color: #FEF3C7; border-bottom: 2px solid #FCD34D; padding: 6px;")
+        scoped_style(self.progress_panel, "background-color: #FEF3C7; border-bottom: 2px solid #FCD34D;")
         self.progress_panel.setVisible(False)
         p_layout = QHBoxLayout(self.progress_panel)
         p_layout.setContentsMargins(15, 6, 15, 6)
@@ -342,11 +364,26 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(lambda: self.switch_page(index))
         return btn
 
+    def toggle_language(self) -> None:
+        set_language(LANG_HI if current_language() == LANG_EN else LANG_EN)
+
+    def _update_lang_button(self, lang: str) -> None:
+        self.btn_lang.setText("🌐 हिंदी" if lang == LANG_EN else "🌐 English")
+
+    def _on_language_changed(self, lang: str) -> None:
+        self._update_lang_button(lang)
+        # Column "not selected" placeholders are created once per mapping card
+        for card in getattr(self.page_mapping, "role_cards", []):
+            for combo in (card.combo_a, card.combo_b):
+                if combo.count():
+                    combo.setItemText(0, tr("-- चयन न करें --"))
+
     def switch_page(self, index: int) -> None:
         if index == 2 and self._results_dirty and self.session_result:
             self._results_dirty = False
             self.page_results.set_results(self.session_result, self.mappings)
         self.stack.setCurrentIndex(index)
+        apply_to(self.stack.currentWidget())  # translate the new page immediately
         buttons = [
             self.btn_nav_import,
             self.btn_nav_map,
@@ -393,6 +430,7 @@ class MainWindow(QMainWindow):
 
     def start_matching_pipeline(self, mappings: list[ColumnMapping], match_within_ward: bool) -> None:
         self.mappings = mappings
+        self.page_search.set_mappings(mappings)
 
         matcher = ElectoralRollMatcher(
             mappings=mappings,
@@ -660,7 +698,7 @@ class MainWindow(QMainWindow):
 
         self.page_mapping.set_columns(data.cols_a, data.cols_b, sample_a, sample_b)
         self.page_duplicates.set_data(data.records_a, data.records_b, data.cols_a, data.cols_b)
-        self.page_search.set_data(data.records_a, data.records_b, data.cols_a, data.cols_b)
+        self.page_search.set_data(data.records_a, data.records_b, data.cols_a, data.cols_b, data.mappings)
 
         if data.session_result:
             self.page_results.set_results(data.session_result, data.mappings)
