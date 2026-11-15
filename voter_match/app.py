@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 
 from voter_match.ui.main_window import MainWindow, LOG_FILE
 
@@ -67,6 +67,13 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Electoral Roll Check")
     app.setOrganizationName("ECI UP BLO Tools")
+
+    # Set Application Window Icon
+    icon_path = PROJECT_ROOT / "voter_match" / "data" / "icon.ico"
+    if not icon_path.exists():
+        icon_path = PROJECT_ROOT / "voter_match" / "data" / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # Set Indic Hindi font family priority
     font = QFont()

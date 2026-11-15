@@ -282,16 +282,6 @@ class ReviewPage(QWidget):
         self.btn_bulk_accept.clicked.connect(self.bulk_auto_accept)
         top_bar.addWidget(self.btn_bulk_accept)
 
-        # Save Session Button
-        self.btn_save_session = QPushButton("💾 सत्र सहेजें")
-        self.btn_save_session.setStyleSheet(
-            f"background-color: #4F46E5; color: #FFFFFF; font-weight: bold; "
-            f"padding: 6px 12px; border-radius: 4px; font-size: 11px;"
-        )
-        self.btn_save_session.setToolTip("वर्तमान सत्यापन सत्र को सहेजें ताकि बाद में कभी भी यहीं से जारी रख सकें")
-        self.btn_save_session.clicked.connect(self.save_session_requested.emit)
-        top_bar.addWidget(self.btn_save_session)
-
         # Star Feature: Download Updated Excel right from the Review Screen!
         self.btn_download_updated = QPushButton("📥 अद्यतन Excel डाउनलोड करें")
         self.btn_download_updated.setStyleSheet(

@@ -29,6 +29,8 @@ def test_main_window_instantiation(qapp):
     assert win is not None
     assert win.stack.count() == 7
     assert win.btn_nav_import.text() == "1️⃣ फ़ाइलें आयात करें"
+    assert win.btn_save_session is not None
+    assert win.btn_open_session is not None
     win.close()
 
 
@@ -77,7 +79,6 @@ def test_results_page_single_button_and_proportions(qapp):
     assert page.combo_criteria is not None
     assert page.combo_criteria.count() == 5
     assert page.txt_search is not None
-    assert page.btn_save_session is not None
 
     # Verify high-contrast results table styling
     qss = page.table_results.styleSheet()

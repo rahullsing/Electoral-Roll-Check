@@ -11,6 +11,8 @@ project_dir = Path(SPECPATH).resolve() if "SPECPATH" in globals() else Path.cwd(
 datas = [
     (str(project_dir / "voter_match" / "data" / "rules_default.json"), "voter_match/data"),
     (str(project_dir / "voter_match" / "data" / "stopwords_default.json"), "voter_match/data"),
+    (str(project_dir / "voter_match" / "data" / "icon.png"), "voter_match/data"),
+    (str(project_dir / "voter_match" / "data" / "icon.ico"), "voter_match/data"),
 ]
 
 hiddenimports = [
@@ -64,6 +66,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(project_dir / "voter_match" / "data" / "icon.ico"),
 )
 
 coll = COLLECT(

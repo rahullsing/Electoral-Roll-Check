@@ -130,6 +130,13 @@ class MainWindow(QMainWindow):
         self.resize(1220, 820)
         self.setMinimumSize(960, 680)
 
+        # Set Window Icon
+        icon_path = Path(__file__).resolve().parent.parent / "data" / "icon.ico"
+        if not icon_path.exists():
+            icon_path = Path(__file__).resolve().parent.parent / "data" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
     def init_ui(self) -> None:
         # Apply Universal High-Contrast Theme
         self.setStyleSheet(GLOBAL_QSS)

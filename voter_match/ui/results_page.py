@@ -133,17 +133,7 @@ class ResultsPage(QWidget):
         header_lbl.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {NAVY_PRIMARY};")
         top_bar.addWidget(header_lbl)
 
-        top_bar.addSpacing(6)
-
-        # Direct Save Session Button
-        self.btn_save_session = QPushButton("💾 सत्र सहेजें (Save Session)")
-        self.btn_save_session.setStyleSheet(
-            f"background-color: #4F46E5; color: #FFFFFF; font-weight: bold; "
-            f"padding: 6px 12px; border-radius: 5px; font-size: 12px;"
-        )
-        self.btn_save_session.setToolTip("वर्तमान मिलान सत्र को सहेजें ताकि बाद में कभी भी यहीं से जारी रख सकें")
-        self.btn_save_session.clicked.connect(self.save_session_requested.emit)
-        top_bar.addWidget(self.btn_save_session)
+        top_bar.addSpacing(10)
 
         # Direct Export Buttons in Top Toolbar
         self.btn_export_excel = QPushButton("📊 Excel रिपोर्ट (.xlsx)")
