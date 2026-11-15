@@ -112,6 +112,7 @@ class ResultsPage(QWidget):
 
     go_to_review = Signal()
     save_session_requested = Signal()
+    accuracy_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -153,6 +154,27 @@ class ResultsPage(QWidget):
         self.btn_export_pdf.setToolTip("फ़ील्ड में ले जाने हेतु प्रिंट-अनुकूलित PDF डाउनलोड करें")
         self.btn_export_pdf.clicked.connect(self.export_pdf)
         top_bar.addWidget(self.btn_export_pdf)
+
+        self.btn_export_forms = QPushButton("📋 प्रारूप 6/7/8 कार्य-सूची")
+        self.btn_export_forms.setStyleSheet(
+            "background-color: #7C3AED; color: #FFFFFF; font-weight: bold; "
+            "padding: 6px 12px; border-radius: 5px; font-size: 12px;"
+        )
+        self.btn_export_forms.setToolTip(
+            "किसके लिए प्रारूप-6 (नाम जोड़ना), प्रारूप-7 (विलोपन) या प्रारूप-8 (संशोधन) भरना है — "
+            "Excel व PDF चेकलिस्ट"
+        )
+        self.btn_export_forms.clicked.connect(self.export_forms)
+        top_bar.addWidget(self.btn_export_forms)
+
+        self.btn_accuracy = QPushButton("📈 सटीकता जाँच")
+        self.btn_accuracy.setStyleSheet(
+            "background-color: #0F766E; color: #FFFFFF; font-weight: bold; "
+            "padding: 6px 12px; border-radius: 5px; font-size: 12px;"
+        )
+        self.btn_accuracy.setToolTip("आपके सत्यापन निर्णयों के आधार पर कंप्यूटर की सटीकता देखें और बेहतर सीमाएँ पाएं")
+        self.btn_accuracy.clicked.connect(self.accuracy_requested.emit)
+        top_bar.addWidget(self.btn_accuracy)
 
         top_bar.addStretch()
 
@@ -613,6 +635,45 @@ class ResultsPage(QWidget):
             )
         except Exception as e:
             QMessageBox.critical(self, "त्रुटि", f"Excel रिपोर्ट बनाने में समस्या:\n{e}")
+
+    def export_forms(self) -> None:
+        if not self.session_result:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "प्रारूप 6/7/8 कार्य-सूची सहेजें",
+            "प्रारूप_6_7_8_कार्य_सूची.xlsx",
+            "Excel Files (*.xlsx)",
+        )
+        if not file_path:
+            return
+        try:
+            from voter_match.core.forms import (
+                classify_form_actions,
+                export_form_actions_excel,
+                export_form_actions_pdf,
+            )
+
+            actions = classify_form_actions(self.session_result, self.mappings)
+            export_form_actions_excel(actions, file_path)
+            pdf_path = str(Path(file_path).with_suffix(".pdf"))
+            pdf_note = ""
+            try:
+                export_form_actions_pdf(actions, pdf_path)
+                pdf_note = f"\nप्रिंट हेतु PDF: {pdf_path}"
+            except Exception as pe:
+                pdf_note = f"\n(PDF नहीं बन सका: {pe})"
+            counts = {f: sum(1 for a in actions if a.form == f) for f in ("6", "7", "8")}
+            QMessageBox.information(
+                self,
+                "कार्य-सूची तैयार",
+                f"प्रारूप-6 (नाम जोड़ना): {counts['6']}\n"
+                f"प्रारूप-7 (विलोपन): {counts['7']}\n"
+                f"प्रारूप-8 (संशोधन): {counts['8']}\n\n"
+                f"Excel: {file_path}{pdf_note}",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "त्रुटि", f"कार्य-सूची बनाने में समस्या:\n{e}")
 
     def export_pdf(self) -> None:
         if not self.session_result:

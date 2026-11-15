@@ -157,7 +157,8 @@ class StorageManager:
             if not row:
                 return None
             data = json.loads(row["mappings_json"])
-            return [ColumnMapping(**d) for d in data]
+            known = set(ColumnMapping.__dataclass_fields__)
+            return [ColumnMapping(**{k: v for k, v in d.items() if k in known}) for d in data]
 
     def list_profiles(self) -> list[str]:
         """List all saved profile names."""
@@ -225,6 +226,15 @@ class StorageManager:
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 (session_id, b_idx, decision, assigned_a_idx, notes),
+            )
+            conn.commit()
+
+    def delete_decision(self, session_id: str, b_idx: int) -> None:
+        """Remove a stored decision (used by Undo to return a record to pending)."""
+        with self.get_connection() as conn:
+            conn.execute(
+                "DELETE FROM review_decisions WHERE session_id = ? AND b_idx = ?",
+                (session_id, b_idx),
             )
             conn.commit()
 

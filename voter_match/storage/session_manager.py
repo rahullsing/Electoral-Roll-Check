@@ -8,8 +8,10 @@ Supports both SQLite local database persistence and portable .vsession files.
 from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
+import gzip
 import json
 import math
+import zlib
 from pathlib import Path
 from typing import Any
 import sqlite3
@@ -19,6 +21,10 @@ from voter_match.core.matcher import MatchRecordB, MatchCandidate, MatchSessionR
 from voter_match.storage.db import get_app_data_dir, get_default_storage, StorageManager
 
 SESSION_FILE_EXTENSION = ".vsession"
+# v2: records stored once and referenced by index; files gzip-compressed
+SESSION_FORMAT_VERSION = "2.0"
+_GZIP_MAGIC = b"\x1f\x8b"
+_ZLIB_PREFIX = b"VMZ1"  # marker for zlib-compressed JSON stored in SQLite
 
 
 def clean_value_for_json(val: Any) -> Any:
@@ -117,6 +123,8 @@ def score_result_to_dict(sr: ScoreResult | None) -> dict[str, Any] | None:
         "is_sibling_guard_applied": sr.is_sibling_guard_applied,
         "voter_name_sim": sr.voter_name_sim,
         "relative_name_sim": sr.relative_name_sim,
+        "epic_match": sr.epic_match,
+        "epic_mismatch": sr.epic_mismatch,
     }
 
 
@@ -130,80 +138,150 @@ def dict_to_score_result(d: dict[str, Any] | None) -> ScoreResult | None:
         is_sibling_guard_applied=d.get("is_sibling_guard_applied", False),
         voter_name_sim=float(d.get("voter_name_sim", 0.0)),
         relative_name_sim=float(d.get("relative_name_sim", 0.0)),
+        epic_match=bool(d.get("epic_match", False)),
+        epic_mismatch=bool(d.get("epic_mismatch", False)),
     )
 
 
-def match_candidate_to_dict(mc: MatchCandidate) -> dict[str, Any]:
-    return {
+def _same_ref(obj: Any, pool: list[dict[str, Any]] | None, idx: int | None) -> bool:
+    """True when obj is literally pool[idx] (so it can be stored as an index)."""
+    return (
+        pool is not None
+        and idx is not None
+        and 0 <= idx < len(pool)
+        and pool[idx] is obj
+    )
+
+
+def _resolve(pool: list[dict[str, Any]] | None, idx: Any) -> dict[str, Any]:
+    try:
+        i = int(idx)
+    except (TypeError, ValueError):
+        return {}
+    if pool is not None and 0 <= i < len(pool):
+        return pool[i]
+    return {}
+
+
+def match_candidate_to_dict(mc: MatchCandidate, records_a: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    d: dict[str, Any] = {
         "a_idx": mc.a_idx,
-        "record_a": mc.record_a,
         "score_result": score_result_to_dict(mc.score_result),
     }
+    if not _same_ref(mc.record_a, records_a, mc.a_idx):
+        d["record_a"] = mc.record_a
+    return d
 
 
-def dict_to_match_candidate(d: dict[str, Any]) -> MatchCandidate:
+def dict_to_match_candidate(d: dict[str, Any], records_a: list[dict[str, Any]] | None = None) -> MatchCandidate:
+    a_idx = int(d.get("a_idx", 0))
+    record_a = d["record_a"] if "record_a" in d else _resolve(records_a, a_idx)
     return MatchCandidate(
-        record_a=d.get("record_a", {}),
-        a_idx=int(d.get("a_idx", 0)),
+        record_a=record_a,
+        a_idx=a_idx,
         score_result=dict_to_score_result(d.get("score_result")) or ScoreResult(0.0),
     )
 
 
-def match_record_b_to_dict(rb: MatchRecordB) -> dict[str, Any]:
-    return {
+def match_record_b_to_dict(
+    rb: MatchRecordB,
+    records_a: list[dict[str, Any]] | None = None,
+    records_b: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    d: dict[str, Any] = {
         "b_idx": rb.b_idx,
-        "record_b": rb.record_b,
         "assigned_a_idx": rb.assigned_a_idx,
-        "assigned_record_a": rb.assigned_record_a,
         "best_score_result": score_result_to_dict(rb.best_score_result),
-        "top_candidates": [match_candidate_to_dict(c) for c in rb.top_candidates],
+        "top_candidates": [match_candidate_to_dict(c, records_a) for c in rb.top_candidates],
         "tier": rb.tier,
         "user_decision": rb.user_decision,
         "notes": rb.notes,
         "is_deleted": rb.is_deleted,
+        "conflict_b_indices": list(rb.conflict_b_indices),
+        "machine_tier": rb.machine_tier,
+        "machine_a_idx": rb.machine_a_idx,
     }
+    if not _same_ref(rb.record_b, records_b, rb.b_idx):
+        d["record_b"] = rb.record_b
+    if rb.assigned_record_a is None or not _same_ref(rb.assigned_record_a, records_a, rb.assigned_a_idx):
+        d["assigned_record_a"] = rb.assigned_record_a
+    return d
 
 
-def dict_to_match_record_b(d: dict[str, Any]) -> MatchRecordB:
+def dict_to_match_record_b(
+    d: dict[str, Any],
+    records_a: list[dict[str, Any]] | None = None,
+    records_b: list[dict[str, Any]] | None = None,
+) -> MatchRecordB:
+    b_idx = int(d.get("b_idx", 0))
+    assigned = d.get("assigned_a_idx")
+    record_b = d["record_b"] if "record_b" in d else _resolve(records_b, b_idx)
+    if "assigned_record_a" in d:
+        assigned_rec = d["assigned_record_a"]
+    else:
+        assigned_rec = _resolve(records_a, assigned) if assigned is not None else None
     return MatchRecordB(
-        b_idx=int(d.get("b_idx", 0)),
-        record_b=d.get("record_b", {}),
-        assigned_a_idx=d.get("assigned_a_idx"),
-        assigned_record_a=d.get("assigned_record_a"),
+        b_idx=b_idx,
+        record_b=record_b,
+        assigned_a_idx=assigned,
+        assigned_record_a=assigned_rec,
         best_score_result=dict_to_score_result(d.get("best_score_result")),
-        top_candidates=[dict_to_match_candidate(c) for c in d.get("top_candidates", [])],
+        top_candidates=[dict_to_match_candidate(c, records_a) for c in d.get("top_candidates", [])],
         tier=d.get("tier", "लापता"),
         user_decision=d.get("user_decision"),
         notes=d.get("notes", ""),
         is_deleted=d.get("is_deleted", False),
+        conflict_b_indices=list(d.get("conflict_b_indices", []) or []),
+        machine_tier=d.get("machine_tier"),
+        machine_a_idx=d.get("machine_a_idx"),
     )
 
 
-def session_result_to_dict(sr: MatchSessionResult | None) -> dict[str, Any] | None:
+def session_result_to_dict(
+    sr: MatchSessionResult | None,
+    records_b: list[dict[str, Any]] | None = None,
+    shared_records_a: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Serialize a session result. Records already stored at the top level of the
+    session (shared_records_a / records_b) are referenced by index, not copied."""
     if not sr:
         return None
-    return {
-        "records_b": [match_record_b_to_dict(r) for r in sr.records_b],
+    d: dict[str, Any] = {
+        "records_b": [match_record_b_to_dict(r, sr.records_a, records_b) for r in sr.records_b],
         "unmatched_a_indices": sr.unmatched_a_indices,
-        "records_a": sr.records_a,
         "stats": sr.stats,
+        "excluded_a_indices": list(sr.excluded_a_indices),
     }
+    if shared_records_a is not None and sr.records_a is shared_records_a:
+        d["records_a_ref"] = "top"
+    else:
+        d["records_a"] = sr.records_a
+    return d
 
 
-def dict_to_session_result(d: dict[str, Any] | None) -> MatchSessionResult | None:
+def dict_to_session_result(
+    d: dict[str, Any] | None,
+    top_records_a: list[dict[str, Any]] | None = None,
+    top_records_b: list[dict[str, Any]] | None = None,
+) -> MatchSessionResult | None:
     if not d:
         return None
+    if d.get("records_a_ref") == "top" and top_records_a is not None:
+        records_a = top_records_a
+    else:
+        records_a = d.get("records_a", []) or []
     return MatchSessionResult(
-        records_b=[dict_to_match_record_b(r) for r in d.get("records_b", [])],
+        records_b=[dict_to_match_record_b(r, records_a, top_records_b) for r in d.get("records_b", [])],
         unmatched_a_indices=d.get("unmatched_a_indices", []),
-        records_a=d.get("records_a", []),
+        records_a=records_a,
         stats=d.get("stats", {}),
+        excluded_a_indices=list(d.get("excluded_a_indices", []) or []),
     )
 
 
 def session_data_to_dict(data: SavedSessionData) -> dict[str, Any]:
     raw_dict = {
-        "version": "1.0",
+        "version": SESSION_FORMAT_VERSION,
         "session_id": data.session_id,
         "title": data.title,
         "file_a": data.file_a,
@@ -213,7 +291,9 @@ def session_data_to_dict(data: SavedSessionData) -> dict[str, Any]:
         "records_a": data.records_a,
         "records_b": data.records_b,
         "mappings": [asdict(m) for m in data.mappings],
-        "session_result": session_result_to_dict(data.session_result),
+        "session_result": session_result_to_dict(
+            data.session_result, records_b=data.records_b, shared_records_a=data.records_a
+        ),
         "created_at": data.created_at or datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
     }
@@ -221,8 +301,11 @@ def session_data_to_dict(data: SavedSessionData) -> dict[str, Any]:
 
 
 def dict_to_session_data(d: dict[str, Any]) -> SavedSessionData:
-    mappings = [ColumnMapping(**m) for m in d.get("mappings", [])]
-    session_result = dict_to_session_result(d.get("session_result"))
+    known = set(ColumnMapping.__dataclass_fields__)
+    mappings = [ColumnMapping(**{k: v for k, v in m.items() if k in known}) for m in d.get("mappings", [])]
+    records_a = d.get("records_a", []) or []
+    records_b = d.get("records_b", []) or []
+    session_result = dict_to_session_result(d.get("session_result"), records_a, records_b)
     return SavedSessionData(
         session_id=d.get("session_id", ""),
         title=d.get("title", "मतदाता मिलान सत्र"),
@@ -230,8 +313,8 @@ def dict_to_session_data(d: dict[str, Any]) -> SavedSessionData:
         file_b=d.get("file_b", ""),
         cols_a=d.get("cols_a", []),
         cols_b=d.get("cols_b", []),
-        records_a=d.get("records_a", []),
-        records_b=d.get("records_b", []),
+        records_a=records_a,
+        records_b=records_b,
         mappings=mappings,
         session_result=session_result,
         created_at=d.get("created_at", ""),
@@ -278,7 +361,9 @@ class SessionManager:
             data.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         data_dict = session_data_to_dict(data)
-        data_json = json.dumps(data_dict, ensure_ascii=False, default=json_default_fallback)
+        data_json = _ZLIB_PREFIX + zlib.compress(
+            json.dumps(data_dict, ensure_ascii=False, default=json_default_fallback).encode("utf-8"), 6
+        )
 
         total_b = len(data.records_b)
         matched = 0
@@ -362,8 +447,7 @@ class SessionManager:
             row = cursor.fetchone()
             if not row:
                 return None
-            data_dict = json.loads(row["data_json"])
-            return dict_to_session_data(data_dict)
+            return dict_to_session_data(_decode_stored_json(row["data_json"]))
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a saved session from SQLite."""
@@ -406,14 +490,26 @@ class SessionManager:
         if not target.suffix:
             target = target.with_suffix(SESSION_FILE_EXTENSION)
         data_dict = session_data_to_dict(data)
-        with open(target, "w", encoding="utf-8") as f:
-            json.dump(data_dict, f, ensure_ascii=False, indent=2, default=json_default_fallback)
+        payload = json.dumps(data_dict, ensure_ascii=False, default=json_default_fallback).encode("utf-8")
+        with gzip.open(target, "wb", compresslevel=6) as f:
+            f.write(payload)
 
     def import_session_file(self, file_path: Path | str) -> SavedSessionData:
         """Import session data from a portable .vsession file."""
-        with open(file_path, "r", encoding="utf-8") as f:
-            data_dict = json.load(f)
-        return dict_to_session_data(data_dict)
+        raw = Path(file_path).read_bytes()
+        if raw[:2] == _GZIP_MAGIC:
+            raw = gzip.decompress(raw)
+        return dict_to_session_data(json.loads(raw.decode("utf-8-sig")))
+
+
+def _decode_stored_json(value: Any) -> dict[str, Any]:
+    """Decode a saved_sessions.data_json value (zlib v2 blob or legacy JSON text)."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        b = bytes(value)
+        if b.startswith(_ZLIB_PREFIX):
+            b = zlib.decompress(b[len(_ZLIB_PREFIX):])
+        return json.loads(b.decode("utf-8"))
+    return json.loads(value)
 
 
 # Global singleton instance

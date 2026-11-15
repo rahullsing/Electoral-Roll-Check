@@ -6,6 +6,7 @@ Supports JSON import/export and SQLite persistence.
 
 from __future__ import annotations
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Iterable
@@ -18,6 +19,9 @@ class AliasManager:
         self.db_path = str(db_path) if db_path else None
         # Pair set stored bidirectionally: (w1, w2) and (w2, w1)
         self.aliases: set[tuple[str, str]] = set()
+        # Record-level negative feedback: (key_b, key_a) pairs a BLO rejected
+        # ("these are NOT the same person"). Keys come from make_record_key().
+        self.rejections: set[tuple[str, str]] = set()
         if self.db_path:
             self.init_db()
             self.load_from_db()
@@ -41,6 +45,17 @@ class AliasManager:
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rejected_pairs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key_b TEXT NOT NULL,
+                    key_a TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(key_b, key_a)
+                )
+                """
+            )
             conn.commit()
 
     def load_from_db(self) -> None:
@@ -53,6 +68,9 @@ class AliasManager:
             for t1, t2 in cursor.fetchall():
                 self.aliases.add((t1, t2))
                 self.aliases.add((t2, t1))
+            cursor.execute("SELECT key_b, key_a FROM rejected_pairs")
+            for kb, ka in cursor.fetchall():
+                self.rejections.add((kb, ka))
 
     def add_alias(self, term1: str, term2: str, source: str = "user_review") -> bool:
         """Add an alias pair."""
@@ -104,6 +122,41 @@ class AliasManager:
         """Check if two terms are registered aliases."""
         return (term1, term2) in self.aliases
 
+    # --- Negative feedback (rejected record pairs) ---
+
+    def add_rejection(self, key_b: str, key_a: str) -> bool:
+        """Remember that List-B record key_b is NOT the List-A record key_a."""
+        if not key_b or not key_a or (key_b, key_a) in self.rejections:
+            return False
+        self.rejections.add((key_b, key_a))
+        if self.db_path:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO rejected_pairs (key_b, key_a) VALUES (?, ?)",
+                        (key_b, key_a),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+        return True
+
+    def remove_rejection(self, key_b: str, key_a: str) -> bool:
+        if (key_b, key_a) not in self.rejections:
+            return False
+        self.rejections.discard((key_b, key_a))
+        if self.db_path:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("DELETE FROM rejected_pairs WHERE key_b = ? AND key_a = ?", (key_b, key_a))
+                    conn.commit()
+            except Exception:
+                pass
+        return True
+
+    def is_rejected(self, key_b: str, key_a: str) -> bool:
+        return (key_b, key_a) in self.rejections
+
     def get_all_aliases(self) -> list[dict[str, str]]:
         """Return unique alias pairs for UI display."""
         seen = set()
@@ -140,8 +193,30 @@ class AliasManager:
 _default_alias_manager: AliasManager | None = None
 
 
+def make_record_key(voter_name: object, relative_name: object = "") -> str:
+    """Stable spelling-insensitive identity key for a voter record (voter|relative)."""
+    from voter_match.core.normalize import normalize_hindi_name
+
+    v = normalize_hindi_name(voter_name).normalized
+    r = normalize_hindi_name(relative_name).normalized if relative_name else ""
+    return f"{v}|{r}" if v else ""
+
+
 def get_default_alias_manager() -> AliasManager:
+    """App-wide alias manager, persisted to the local SQLite DB so learning
+    survives restarts. Set VOTER_MATCH_IN_MEMORY=1 (tests) to keep it in RAM."""
     global _default_alias_manager
     if _default_alias_manager is None:
-        _default_alias_manager = AliasManager()
+        db_path = None
+        if os.environ.get("VOTER_MATCH_IN_MEMORY") != "1":
+            try:
+                from voter_match.storage.db import DEFAULT_DB_PATH
+
+                db_path = DEFAULT_DB_PATH
+            except Exception:
+                db_path = None
+        try:
+            _default_alias_manager = AliasManager(db_path)
+        except Exception:
+            _default_alias_manager = AliasManager()
     return _default_alias_manager

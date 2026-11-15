@@ -5,15 +5,44 @@ Offline Windows Application for Fuzzy Hindi Voter-List Matching (बूथ ल�
 ## 📌 Status Dashboard
 - **Total Modules**: 14 Major Components
 - **Completed**: 14 / 14 (100% Complete)
-- **Status**: Production Quality, Full Code Written, All 25 Unit, Integration & UI Tests Passing!
+- **Status**: Production Quality, Full Code Written, All 42 Unit, Integration, UI & Benchmark Tests Passing!
 - **Real-World Testing**: Verified against actual user rolls `Chanchpur_Bhatela_Voter_List_2026_Hindi.xlsx` (649 rows) vs `Chanchpur_Bhatela_Check_List_B.xlsx` (707 rows) in 1.23s!
 - **Target Audience**: Booth Level Officers (BLOs) / Primary School Teachers in Uttar Pradesh
 - **GitHub Repository**: [rahullsing/Electoral-Roll-Check](https://github.com/rahullsing/Electoral-Roll-Check.git) (Synced & Pushed to `main`)
-- **Executable**: Compiled standalone Windows package at `dist/ElectoralRollCheck/ElectoralRollCheck.exe` (20.2 MB) + 1-click launcher `run_app.bat`
+- **Executable**: Single-file standalone Windows executable at `dist/ElectoralRollCheck.exe` + 1-click launcher `run_app.bat`
 
 ---
 
-## 🌟 Key Innovations & Recent Upgrades (Latest Sprint)
+## 🚀 Sprint: Performance + BLO Workflow Features (2026-11-15)
+
+### Optimizations
+1. **Sparse optimal assignment** (`core/assignment.py`): union-find splits the candidate graph into connected components and runs `linear_sum_assignment` per component. Same global optimum as the old dense (n_b × n_a) solve (verified objective-equal on random graphs and row-identical on the Chanchpur real data), without the ~100 MB matrix.
+2. **Vectorised blocking** (`core/blocking.py`): one multi-threaded `rapidfuzz.process.cdist` call per 512-row chunk replaces a Python-level `extract()` per row; ties broken by lowest index exactly like `extract`, so candidate sets are identical.
+3. **Memoisation**: `HindiNormalizer.normalize()` cache; per-run similarity / age / gender / house / EPIC caches in `RecordScorer`; deleted-row flags and role lookups precomputed once.
+4. **Benchmark** (`scripts/benchmark.py`, guarded by `test_benchmark_large_roll_speed`): 5,000 × 5,000 synthetic rolls **78.4 s → 21.8 s**; real Chanchpur roll 2.3 s → 0.9 s with identical results.
+5. **Debounced review**: autosave runs 2 s after the last decision (flushed on close) and the Results table rebuilds only when visible; per-decision rows are still written immediately.
+6. **Session format v2**: records stored once and referenced by index; `.vsession` gzip-compressed; SQLite payload zlib-compressed; v1 files still load.
+
+### Features
+1. **EPIC role**: exact EPIC → definite match (score ≥ 0.97, bypasses sibling guard); mismatch → −15 % and never auto-"मिला"; EPIC candidates injected into blocking; OCR slip repair (O→0, I→1).
+2. **Roll-year age offset**: roll year A / B on the age card → `ColumnMapping.year_offset`.
+3. **Undo (Ctrl+Z)** on the Review screen, incl. bulk auto-approve groups, alias/rejection side effects and stored decisions (`StorageManager.delete_decision`).
+4. **Rejection learning**: passed-over / "missing" candidates stored in `rejected_pairs`; future runs cap those pairs at 0.54 (visible, never auto-assigned). Learned aliases are now persisted to the app DB (previously in-memory only).
+5. **Cross-list duplicate detection**: B rows strongly matching the same A voter are flagged (`conflict_b_indices`) and warned on accept.
+6. **Form 6/7/8 work list** (`core/forms.py`): Excel (sheet per form, tick column) + PDF checklist; BLO remarks override.
+7. **Accuracy & threshold tuning** (`core/evaluation.py`): precision/recall from manual decisions, grid-searched thresholds minimising 5×errors + reviews; `MatchSessionResult.retier()` applies new thresholds instantly to undecided records (also used by Settings).
+8. **Roman → Devanagari transliteration** (`core/transliterate.py`) before normalisation.
+9. **Offline name read-aloud** (`ui/tts.py`): Hindi voice when installed, romanised fallback for English voices.
+10. **Multi-booth batch mode** (`core/batch.py`, `ui/batch_dialog.py`): queue / folder-pair discovery, per-pair reports, combined summary, error isolation.
+11. **ETA** on the matching progress panel.
+
+### Fixes found along the way
+* `recalculate_stats()` treated A voters held by "जाँचें" rows as "only in A" (29 → 262 on real data after any decision); now consistent with matching-time semantics.
+* Column auto-suggest picked "अनुभाग संख्या और नाम" for voter name and "पृष्ठ संख्या" for serial/house; new shared `core/column_suggest.py` (exact-match bonus, exclusion words, one column per role).
+
+---
+
+## 🌟 Key Innovations & Recent Upgrades (Previous Sprint)
 1. **NumPy / Pandas Scalar JSON Serialization Guard (Fixed `int64` error)**:
    - Fixed `TypeError: Object of type int64 is not JSON serializable` when saving sessions or exporting `.vsession` files.
    - Built recursive `clean_value_for_json()` and `json_default_fallback()` in `voter_match/storage/session_manager.py` that automatically maps NumPy integers (`np.int64`, `np.int32`), floats (`np.float64`), booleans (`np.bool_`), and Pandas null values (`pd.NA`, `np.nan`) to native Python types.

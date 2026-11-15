@@ -8,10 +8,11 @@ and local error logging.
 from __future__ import annotations
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -48,6 +49,7 @@ from voter_match.storage.session_manager import (
     get_default_session_manager,
 )
 from voter_match.ui.session_dialog import SaveSessionDialog, OpenSessionDialog
+from voter_match.ui.batch_dialog import BatchDialog
 from voter_match.ui.theme import GLOBAL_QSS, NAVY_PRIMARY
 
 # Setup local file logging safely
@@ -122,6 +124,15 @@ class MainWindow(QMainWindow):
         self.min_voter = 0.90
         self.min_rel = 0.80
 
+        # Review-time work is debounced: a burst of keyboard decisions triggers
+        # one autosave and one Results-table rebuild, not one per keypress.
+        self._results_dirty = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(2000)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self._match_started_at: float | None = None
+
         self.init_window()
         self.init_ui()
 
@@ -131,11 +142,26 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 680)
 
         # Set Window Icon
-        icon_path = Path(__file__).resolve().parent.parent / "data" / "icon.ico"
-        if not icon_path.exists():
-            icon_path = Path(__file__).resolve().parent.parent / "data" / "icon.png"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        candidates = []
+        if hasattr(sys, "_MEIPASS"):
+            meipass = Path(sys._MEIPASS)
+            candidates.extend([
+                meipass / "voter_match" / "data" / "icon.ico",
+                meipass / "voter_match" / "data" / "icon.png",
+                meipass / "data" / "icon.ico",
+                meipass / "data" / "icon.png",
+            ])
+        pkg_data = Path(__file__).resolve().parent.parent / "data"
+        candidates.extend([
+            pkg_data / "icon.ico",
+            pkg_data / "icon.png",
+            Path.cwd() / "voter_match" / "data" / "icon.ico",
+            Path.cwd() / "voter_match" / "data" / "icon.png",
+        ])
+        for icon_path in candidates:
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+                break
 
     def init_ui(self) -> None:
         # Apply Universal High-Contrast Theme
@@ -183,6 +209,15 @@ class MainWindow(QMainWindow):
         self.btn_open_session.setToolTip("पूर्व में सहेजे गए सत्र को खोलें और अपना कार्य जारी रखें")
         self.btn_open_session.clicked.connect(self.open_open_session_dialog)
         banner_layout.addWidget(self.btn_open_session)
+
+        self.btn_batch = QPushButton("📦 बैच मिलान (Batch)")
+        self.btn_batch.setStyleSheet(
+            "background-color: #7C3AED; color: white; font-weight: bold; "
+            "padding: 5px 12px; border-radius: 5px; font-size: 12px; border: 1px solid #6D28D9;"
+        )
+        self.btn_batch.setToolTip("एक साथ कई भाग/बूथ की फ़ाइल-जोड़ियों का मिलान करें और संयुक्त सारांश पाएं")
+        self.btn_batch.clicked.connect(self.open_batch_dialog)
+        banner_layout.addWidget(self.btn_batch)
 
         # Offline & Security Badge
         badge_lbl = QLabel("🛡️ 100% ऑफलाइन (डेटा सुरक्षित)")
@@ -270,6 +305,7 @@ class MainWindow(QMainWindow):
         self.page_results = ResultsPage()
         self.page_results.go_to_review.connect(lambda: self.switch_page(3))
         self.page_results.save_session_requested.connect(self.open_save_session_dialog)
+        self.page_results.accuracy_requested.connect(self.show_accuracy_dialog)
         self.stack.addWidget(self.page_results)
 
         self.page_review = ReviewPage()
@@ -307,6 +343,9 @@ class MainWindow(QMainWindow):
         return btn
 
     def switch_page(self, index: int) -> None:
+        if index == 2 and self._results_dirty and self.session_result:
+            self._results_dirty = False
+            self.page_results.set_results(self.session_result, self.mappings)
         self.stack.setCurrentIndex(index)
         buttons = [
             self.btn_nav_import,
@@ -368,6 +407,7 @@ class MainWindow(QMainWindow):
         self.progress_panel.setVisible(True)
         self.pbar.setValue(0)
         self.lbl_progress_status.setText("मिलान प्रक्रिया आरंभ हो रही है...")
+        self._match_started_at = time.monotonic()
 
         self.worker = MatcherWorker(matcher, self.records_a, self.records_b, self)
         self.worker.progress.connect(self.on_matching_progress)
@@ -376,10 +416,17 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_matching_progress(self, msg: str, cur: int, tot: int) -> None:
-        self.lbl_progress_status.setText(msg)
         pct = int((cur / max(1, tot)) * 100)
+        eta = ""
+        if self._match_started_at is not None and 10 <= pct < 100:
+            elapsed = time.monotonic() - self._match_started_at
+            remaining = elapsed * (100 - pct) / pct
+            if remaining >= 1:
+                eta = f"  (शेष समय लगभग {int(remaining // 60)} मि. {int(remaining % 60)} से.)" if remaining >= 60 \
+                    else f"  (शेष समय लगभग {int(remaining)} सेकंड)"
+        self.lbl_progress_status.setText(msg + eta)
         self.pbar.setValue(pct)
-        self.status_bar.showMessage(msg)
+        self.status_bar.showMessage(msg + eta)
 
     def on_matching_finished(self, result: MatchSessionResult) -> None:
         self.progress_panel.setVisible(False)
@@ -394,50 +441,55 @@ class MainWindow(QMainWindow):
         missing = result.stats.get("लापता", 0)
         self.status_bar.showMessage(f"मिलान पूर्ण! मिला: {matched}, जाँचें: {review}, लापता: {missing}")
 
+        self._results_dirty = False
         # Auto-save session for crash recovery
+        self._do_autosave()
+
+    def _current_session_data(self) -> SavedSessionData:
+        return SavedSessionData(
+            session_id="__autosave_latest__",
+            title="स्वतः-सहेजा गया सत्र",
+            file_a=getattr(self.page_import.widget_a, "file_path", ""),
+            file_b=getattr(self.page_import.widget_b, "file_path", ""),
+            cols_a=self.cols_a,
+            cols_b=self.cols_b,
+            records_a=self.records_a,
+            records_b=self.records_b,
+            mappings=self.mappings,
+            session_result=self.session_result,
+        )
+
+    def _do_autosave(self) -> None:
+        """Write the crash-recovery snapshot (called directly or via the debounce timer)."""
+        self._autosave_timer.stop()
+        if not self.session_result:
+            return
         try:
-            sm = get_default_session_manager()
-            sm.auto_save(SavedSessionData(
-                session_id="__autosave_latest__",
-                title="स्वतः-सहेजा गया सत्र",
-                file_a=getattr(self.page_import.widget_a, "file_path", ""),
-                file_b=getattr(self.page_import.widget_b, "file_path", ""),
-                cols_a=self.cols_a,
-                cols_b=self.cols_b,
-                records_a=self.records_a,
-                records_b=self.records_b,
-                mappings=self.mappings,
-                session_result=result,
-            ))
+            get_default_session_manager().auto_save(self._current_session_data())
         except Exception:
-            pass
+            logging.exception("Autosave failed")
 
     def on_review_session_updated(self) -> None:
         if hasattr(self, "session_result") and self.session_result:
             self.session_result.recalculate_stats()
-            self.page_results.set_results(self.session_result, self.mappings)
+            # Rebuild the (large) Results table only when it is actually visible
+            if self.stack.currentIndex() == 2:
+                self.page_results.set_results(self.session_result, self.mappings)
+            else:
+                self._results_dirty = True
             matched = self.session_result.stats.get("मिला", 0)
             review = self.session_result.stats.get("जाँचें", 0)
             missing = self.session_result.stats.get("लापता", 0)
             self.status_bar.showMessage(f"सत्यापन अपडेट हुआ! मिला: {matched}, जाँचें: {review}, लापता: {missing}")
 
-            # Update auto-saved session
-            try:
-                sm = get_default_session_manager()
-                sm.auto_save(SavedSessionData(
-                    session_id="__autosave_latest__",
-                    title="स्वतः-सहेजा गया सत्र",
-                    file_a=getattr(self.page_import.widget_a, "file_path", ""),
-                    file_b=getattr(self.page_import.widget_b, "file_path", ""),
-                    cols_a=self.cols_a,
-                    cols_b=self.cols_b,
-                    records_a=self.records_a,
-                    records_b=self.records_b,
-                    mappings=self.mappings,
-                    session_result=self.session_result,
-                ))
-            except Exception:
-                pass
+            # Debounced crash-recovery autosave (decisions themselves are already
+            # persisted row-by-row in review_decisions)
+            self._autosave_timer.start()
+
+    def closeEvent(self, event) -> None:
+        if self._autosave_timer.isActive():
+            self._do_autosave()
+        super().closeEvent(event)
 
     def on_matching_error(self, err_msg: str) -> None:
         self.progress_panel.setVisible(False)
@@ -454,7 +506,110 @@ class MainWindow(QMainWindow):
         self.thresh_review = r
         self.min_voter = v
         self.min_rel = rel
-        self.status_bar.showMessage("नई मिलान सीमाएँ सहेजी गईं।")
+        changed = self._retier_current()
+        if changed is None:
+            self.status_bar.showMessage("नई मिलान सीमाएँ सहेजी गईं।")
+        else:
+            self.status_bar.showMessage(f"नई मिलान सीमाएँ लागू — {changed} असत्यापित मतदाताओं की श्रेणी बदली।")
+
+    def _has_relative(self) -> bool:
+        return any(m.role == "relative_name" and m.is_active() for m in self.mappings)
+
+    def _retier_current(self) -> int | None:
+        """Apply current thresholds to the open session's undecided records."""
+        if not self.session_result:
+            return None
+        changed = self.session_result.retier(
+            self.thresh_matched, self.thresh_review, self.min_voter, self.min_rel, self._has_relative()
+        )
+        self.page_results.set_results(self.session_result, self.mappings)
+        self.page_review.update_progress_tracker()
+        self.page_review.apply_filter()
+        self._results_dirty = False
+        self._autosave_timer.start()
+        return changed
+
+    def show_accuracy_dialog(self) -> None:
+        if not self.session_result:
+            return
+        from voter_match.core.evaluation import MIN_LABELS_FOR_SUGGESTION, session_report
+
+        cur, sug = session_report(
+            self.session_result, self.thresh_matched, self.thresh_review,
+            self.min_voter, self.min_rel, self._has_relative(),
+        )
+        if cur.labels == 0:
+            QMessageBox.information(
+                self, "सटीकता जाँच",
+                "अभी तक कोई मानवीय सत्यापन निर्णय नहीं लिया गया है।\n"
+                "चरण 4 (स्थलीय सत्यापन) में कुछ रिकॉर्ड जाँचें, फिर यहाँ लौटें।",
+            )
+            return
+
+        def block(rep, title):
+            return (
+                f"<b>{title}</b> (मिला ≥ {int(rep.thr_matched * 100)}%, जाँचें ≥ {int(rep.thr_review * 100)}%)<br>"
+                f"• स्वतः 'मिला' जिनमें कंप्यूटर सही: <b>{rep.auto_correct}/{rep.auto_matched}</b> "
+                f"(परिशुद्धता {rep.precision * 100:.1f}%)<br>"
+                f"• वास्तविक मिलानों में से स्वतः पकड़े गए: {rep.recall * 100:.1f}%<br>"
+                f"• गलत स्वतः निर्णय: {rep.auto_wrong} मिला + {rep.missing_wrong} लापता<br>"
+                f"• जाँच हेतु भेजे गए: {rep.review}<br>"
+            )
+
+        html = (
+            f"आपके <b>{cur.labels}</b> मानवीय सत्यापन निर्णयों के आधार पर "
+            f"(स्वतः-स्वीकृत गिने नहीं गए):<br><br>" + block(cur, "वर्तमान सीमाएँ")
+        )
+        if sug is None:
+            html += (
+                f"<br><i>सीमा सुझाव हेतु कम से कम {MIN_LABELS_FOR_SUGGESTION} निर्णय चाहिए "
+                f"(अभी {cur.labels})।</i>"
+            )
+            QMessageBox.information(self, "📈 सटीकता जाँच", html)
+            return
+
+        same = abs(sug.thr_matched - self.thresh_matched) < 1e-9 and abs(sug.thr_review - self.thresh_review) < 1e-9
+        html += "<br>" + block(sug, "सुझाई गई सीमाएँ")
+        html += (
+            "<br><i>ध्यान दें: अधिकतर 'जाँचें' श्रेणी के रिकॉर्ड ही जाँचे जाते हैं, अतः यह अनुमान है।</i>"
+        )
+        if same:
+            html += "<br><br>✅ वर्तमान सीमाएँ पहले से सर्वोत्तम हैं।"
+            QMessageBox.information(self, "📈 सटीकता जाँच", html)
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("📈 सटीकता जाँच एवं सीमा सुझाव")
+        box.setTextFormat(Qt.RichText)
+        box.setText(html + "<br><br>क्या सुझाई गई सीमाएँ लागू करें? (असत्यापित रिकॉर्ड तुरंत पुनः वर्गीकृत होंगे)")
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        if box.exec() == QMessageBox.Yes:
+            self.page_settings.set_threshold_values(sug.thr_matched, sug.thr_review)
+            self.on_thresholds_changed(sug.thr_matched, sug.thr_review, self.min_voter, self.min_rel)
+
+    def open_batch_dialog(self) -> None:
+        template = []
+        if getattr(self.page_mapping, "role_cards", None):
+            template = [c.get_mapping() for c in self.page_mapping.role_cards]
+        if not template:
+            template = list(self.mappings)
+        if not any(m.role == "voter_name" and m.is_active() for m in template):
+            QMessageBox.information(
+                self,
+                "पहले कॉलम मिलाएँ",
+                "बैच मिलान वर्तमान कॉलम मैपिंग का उपयोग करता है।\n"
+                "कृपया पहले चरण 1-2 में किसी एक भाग की फ़ाइलें लोड कर कॉलम मिलाएँ।",
+            )
+            return
+        kwargs = dict(
+            threshold_matched=self.thresh_matched,
+            threshold_review=self.thresh_review,
+            min_voter_sim=self.min_voter,
+            min_relative_sim=self.min_rel,
+            match_within_ward=self.page_mapping.chk_ward.isChecked(),
+            alias_manager=get_default_alias_manager(),
+        )
+        BatchDialog(template, kwargs, self).exec()
 
     def open_save_session_dialog(self) -> None:
         if not self.records_b and not self.session_result:

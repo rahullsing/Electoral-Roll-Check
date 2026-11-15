@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Callable
 
+import numpy as np
 import rapidfuzz.process as rf_process
 import rapidfuzz.fuzz as rf_fuzz
 
@@ -173,21 +174,67 @@ class CandidateBlocker:
                 if pair in dual_cons_index_a:
                     cands.update(dual_cons_index_a[pair])
 
-            # Signal 3: RapidFuzz extract top-k
-            query_str = norm_b.space_free or norm_b.clean
-            if query_str and a_strings:
-                # rapidfuzz extract returns [(match_val, score, key_idx), ...]
-                top_matches = rf_process.extract(
-                    query_str,
-                    a_strings,
-                    scorer=rf_fuzz.ratio,
-                    limit=self.top_k_fuzzy,
-                    score_cutoff=45.0,
-                )
-                for item in top_matches:
-                    cands.add(item[2])  # item[2] is the dictionary key (a_idx)
-
             if progress_callback and (count % step == 0 or count == total_b - 1):
                 progress_callback(count + 1, total_b)
 
+        # Signal 3: RapidFuzz top-k, vectorised. A single multi-threaded C++
+        # cdist call per chunk replaces one Python-level extract() per row.
+        self._add_fuzzy_topk(b_indices, norm_cache_b, a_strings, b_candidates)
+
         return b_candidates
+
+    def _add_fuzzy_topk(
+        self,
+        b_indices: list[int],
+        norm_cache_b: list[NormalizedName],
+        a_strings: dict[int, str],
+        b_candidates: dict[int, set[int]],
+        chunk_size: int = 512,
+        score_cutoff: float = 45.0,
+    ) -> None:
+        """Add the top-k most similar A rows (fuzz.ratio >= cutoff) for every B row."""
+        a_ids = [i for i, s in a_strings.items() if s]
+        if not a_ids:
+            return
+        a_strs = [a_strings[i] for i in a_ids]
+        a_ids_arr = np.asarray(a_ids, dtype=np.int64)
+
+        queries = [
+            (b_idx, norm_cache_b[b_idx].space_free or norm_cache_b[b_idx].clean)
+            for b_idx in b_indices
+        ]
+        queries = [(b, q) for b, q in queries if q]
+        if not queries:
+            return
+
+        k = min(self.top_k_fuzzy, len(a_ids))
+        ties_empty = np.empty(0, dtype=np.int64)
+        for start in range(0, len(queries), chunk_size):
+            chunk = queries[start:start + chunk_size]
+            mat = rf_process.cdist(
+                [q for _, q in chunk],
+                a_strs,
+                scorer=rf_fuzz.ratio,
+                score_cutoff=score_cutoff,
+                dtype=np.float32,
+                workers=-1,
+            )
+            # k-th best score per row (O(n) partition instead of a full sort)
+            if k < len(a_ids):
+                kth = -np.partition(-mat, k - 1, axis=1)[:, k - 1]
+            else:
+                kth = np.zeros(len(chunk), dtype=np.float32)
+            for row, (b_idx, _) in enumerate(chunk):
+                scores = mat[row]
+                thr = max(float(kth[row]), score_cutoff)
+                above = np.flatnonzero(scores > thr)
+                # Ties at the k-th score are broken by lowest A index, exactly
+                # like rapidfuzz.process.extract(limit=k) did row by row.
+                need = k - above.size
+                if need > 0:
+                    ties = np.flatnonzero(scores == thr)[:need] if thr >= score_cutoff else ties_empty
+                    picked = np.concatenate((above, ties))
+                else:
+                    picked = above
+                if picked.size:
+                    b_candidates[b_idx].update(a_ids_arr[picked].tolist())

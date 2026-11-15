@@ -257,6 +257,11 @@ class SettingsPage(QWidget):
                 item.setForeground(QBrush(dark_text))
                 self.table_rules.setItem(idx, col_i, item)
 
+    def set_threshold_values(self, m: float, r: float) -> None:
+        """Move the sliders to new values (e.g. accepted accuracy suggestion)."""
+        self.slider_matched.setValue(int(round(m * 100)))
+        self.slider_review.setValue(int(round(r * 100)))
+
     def apply_thresholds(self) -> None:
         m = self.slider_matched.value() / 100.0
         r = self.slider_review.value() / 100.0

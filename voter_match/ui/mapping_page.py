@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from voter_match.core.scorer import ColumnMapping, IMPORTANCE_WEIGHTS
+from voter_match.core.column_suggest import ROLE_KEYWORDS, column_role_score, suggest_columns
 from voter_match.storage.db import get_default_storage
 from voter_match.ui.theme import (
     NAVY_PRIMARY,
@@ -48,7 +49,16 @@ STANDARD_ROLES = [
         "badge_color": "#7C3AED",
         "type": "text",
         "default_importance": "Paper Ref",
-        "keywords": ["क्रम", "क्रमांक", "क्र०", "क्र.", "अनुक्रमांक", "serial", "sl", "sr", "sno", "id", "संख्या"],
+        "keywords": ROLE_KEYWORDS["serial_no"],
+    },
+    {
+        "role": "epic",
+        "label": "🪪 EPIC / मतदाता पहचान पत्र संख्या (Voter ID)",
+        "badge": "निश्चित पहचान (Exact ID)",
+        "badge_color": "#0F766E",
+        "type": "text",
+        "default_importance": "High",
+        "keywords": ROLE_KEYWORDS["epic"],
     },
     {
         "role": "voter_name",
@@ -57,7 +67,7 @@ STANDARD_ROLES = [
         "badge_color": "#DC2626",
         "type": "name",
         "default_importance": "High",
-        "keywords": ["नाम", "मतदाता", "निर्वाचक", "voter", "name"],
+        "keywords": ROLE_KEYWORDS["voter_name"],
     },
     {
         "role": "relative_name",
@@ -66,7 +76,7 @@ STANDARD_ROLES = [
         "badge_color": "#DC2626",
         "type": "name",
         "default_importance": "High",
-        "keywords": ["पिता", "पति", "माता", "सम्बन्धी", "relative", "father", "husband"],
+        "keywords": ROLE_KEYWORDS["relative_name"],
     },
     {
         "role": "age",
@@ -75,7 +85,7 @@ STANDARD_ROLES = [
         "badge_color": "#2563EB",
         "type": "number",
         "default_importance": "Medium",
-        "keywords": ["आयु", "उम्र", "age"],
+        "keywords": ROLE_KEYWORDS["age"],
     },
     {
         "role": "gender",
@@ -84,7 +94,7 @@ STANDARD_ROLES = [
         "badge_color": "#2563EB",
         "type": "category",
         "default_importance": "Low",
-        "keywords": ["लिंग", "gender", "sex"],
+        "keywords": ROLE_KEYWORDS["gender"],
     },
     {
         "role": "house_no",
@@ -93,7 +103,7 @@ STANDARD_ROLES = [
         "badge_color": "#059669",
         "type": "text",
         "default_importance": "Bonus only",
-        "keywords": ["मकान", "गृह", "संख्या", "house", "hno"],
+        "keywords": ROLE_KEYWORDS["house_no"],
     },
     {
         "role": "ward",
@@ -102,7 +112,7 @@ STANDARD_ROLES = [
         "badge_color": "#64748B",
         "type": "category",
         "default_importance": "Ignore",
-        "keywords": ["वार्ड", "भाग", "अनुभाग", "ward", "part", "section"],
+        "keywords": ROLE_KEYWORDS["ward"],
     },
 ]
 
@@ -188,13 +198,42 @@ class RoleCardWidget(QFrame):
             self.spin_tol.setSuffix(" वर्ष")
             self.spin_tol.setToolTip("कितने वर्ष तक के अंतर को स्वीकार्य माना जाए")
             top_row.addWidget(self.spin_tol)
+
+            # Roll years: lists from different years need an age shift (2023 vs 2026 -> +3)
+            lbl_years = QLabel("  नामावली वर्ष A / B:")
+            lbl_years.setStyleSheet("color: #475569; font-size: 11px;")
+            lbl_years.setToolTip("यदि सूची A और सूची B अलग-अलग वर्ष की हैं, तो आयु का अंतर स्वतः समायोजित होगा")
+            top_row.addWidget(lbl_years)
+            self.spin_year_a = QSpinBox()
+            self.spin_year_a.setRange(1990, 2100)
+            self.spin_year_a.setValue(2026)
+            self.spin_year_a.setToolTip("सूची A (संदर्भ) किस वर्ष की नामावली है")
+            top_row.addWidget(self.spin_year_a)
+            self.spin_year_b = QSpinBox()
+            self.spin_year_b.setRange(1990, 2100)
+            self.spin_year_b.setValue(2026)
+            self.spin_year_b.setToolTip("सूची B (सत्यापन) किस वर्ष की नामावली है")
+            top_row.addWidget(self.spin_year_b)
+            self.lbl_offset = QLabel("")
+            self.lbl_offset.setStyleSheet("color: #0F766E; font-size: 11px; font-weight: bold;")
+            top_row.addWidget(self.lbl_offset)
+            self.spin_year_a.valueChanged.connect(self._update_offset_label)
+            self.spin_year_b.valueChanged.connect(self._update_offset_label)
         elif self.role == "serial_no":
             lbl_tip = QLabel("💡 <i>कागज़ी सूची में मतदाता को तुरंत खोजने हेतु (यह स्कोरिंग को प्रभावित नहीं करेगा)</i>")
             lbl_tip.setStyleSheet("color: #7C3AED; font-size: 11px;")
             top_row.addWidget(lbl_tip)
             self.spin_tol = None
+        elif self.role == "epic":
+            lbl_tip = QLabel("💡 <i>EPIC समान हो तो नाम में अंतर होने पर भी निश्चित मिलान</i>")
+            lbl_tip.setStyleSheet("color: #0F766E; font-size: 11px;")
+            top_row.addWidget(lbl_tip)
+            self.spin_tol = None
         else:
             self.spin_tol = None
+        if self.role != "age":
+            self.spin_year_a = None
+            self.spin_year_b = None
 
         layout.addLayout(top_row)
 
@@ -244,6 +283,15 @@ class RoleCardWidget(QFrame):
         sample_row.addStretch()
         layout.addLayout(sample_row)
 
+    def _update_offset_label(self) -> None:
+        off = self.year_offset()
+        self.lbl_offset.setText(f"(आयु समायोजन {off:+d} वर्ष)" if off else "")
+
+    def year_offset(self) -> int:
+        if not self.spin_year_a or not self.spin_year_b:
+            return 0
+        return self.spin_year_b.value() - self.spin_year_a.value()
+
     def update_sample_previews(self) -> None:
         col_a = self.combo_a.currentText()
         col_b = self.combo_b.currentText()
@@ -281,9 +329,12 @@ class RoleCardWidget(QFrame):
             weight=IMPORTANCE_WEIGHTS.get(imp_key, 1.0),
             col_type=self.col_type,
             tolerance=tol,
+            year_offset=self.year_offset(),
         )
 
-    def set_mapping(self, col_a: str | None, col_b: str | None, imp: str, tol: int = 3) -> None:
+    def set_mapping(
+        self, col_a: str | None, col_b: str | None, imp: str, tol: int = 3, year_offset: int = 0
+    ) -> None:
         if col_a and col_a in self.cols_a:
             self.combo_a.setCurrentText(col_a)
         if col_b and col_b in self.cols_b:
@@ -293,6 +344,8 @@ class RoleCardWidget(QFrame):
             self.combo_importance.setCurrentIndex(idx)
         if self.spin_tol:
             self.spin_tol.setValue(tol)
+        if self.spin_year_a and self.spin_year_b:
+            self.spin_year_b.setValue(self.spin_year_a.value() + int(year_offset or 0))
         self.update_sample_previews()
 
 
@@ -453,35 +506,24 @@ class MappingPage(QWidget):
 
     def auto_suggest(self) -> None:
         """Auto-suggest mappings based on Devanagari and English keywords."""
-        for card, info in zip(self.role_cards, STANDARD_ROLES):
-            keywords = info["keywords"]
-
-            best_a = self._find_best_match(self.cols_a, keywords)
-            best_b = self._find_best_match(self.cols_b, keywords)
-
-            if best_a:
-                card.combo_a.setCurrentText(best_a)
-            if best_b:
-                card.combo_b.setCurrentText(best_b)
-
+        roles = [info["role"] for info in STANDARD_ROLES]
+        kw = {info["role"]: info["keywords"] for info in STANDARD_ROLES}
+        best_a = suggest_columns(self.cols_a, roles, kw)
+        best_b = suggest_columns(self.cols_b, roles, kw)
+        for card in self.role_cards:
+            if card.role in best_a:
+                card.combo_a.setCurrentText(best_a[card.role])
+            if card.role in best_b:
+                card.combo_b.setCurrentText(best_b[card.role])
             card.update_sample_previews()
 
     def _find_best_match(self, cols: list[str], keywords: list[str]) -> str | None:
-        best_col = None
-        best_score = 0.0
-
+        """Best single column for a keyword list (kept for compatibility)."""
+        best_col, best = None, 0.0
         for col in cols:
-            col_l = col.lower()
-            for kw in keywords:
-                if kw in col_l:
-                    score = 90.0 + len(kw)
-                else:
-                    score = rf_fuzz.ratio(kw, col_l)
-
-                if score > best_score and score >= 60.0:
-                    best_score = score
-                    best_col = col
-
+            sc = column_role_score("", col, keywords)
+            if sc > best and sc >= 60.0:
+                best_col, best = col, sc
         return best_col
 
     def refresh_profiles(self) -> None:
@@ -501,7 +543,7 @@ class MappingPage(QWidget):
         for card in self.role_cards:
             if card.role in map_dict:
                 m = map_dict[card.role]
-                card.set_mapping(m.col_a, m.col_b, m.importance, m.tolerance)
+                card.set_mapping(m.col_a, m.col_b, m.importance, m.tolerance, getattr(m, "year_offset", 0))
 
     def save_current_profile(self) -> None:
         name, ok = QInputDialog.getText(self, "प्रोफ़ाइल सहेजें", "प्रोफ़ाइल का नाम दर्ज करें (उदा० पंचायत vs विधानसभा):")

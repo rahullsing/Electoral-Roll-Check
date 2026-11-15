@@ -8,13 +8,51 @@ globally optimal 1-to-1 match between voter lists without greedy bias.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
-import numpy as np
-from scipy.optimize import linear_sum_assignment
+from collections import defaultdict
 
 from voter_match.core.normalize import NormalizedName, normalize_hindi_name
-from voter_match.core.scorer import RecordScorer, ColumnMapping, ScoreResult
+from voter_match.core.scorer import RecordScorer, ColumnMapping, ScoreResult, normalize_epic
 from voter_match.core.blocking import CandidateBlocker
 from voter_match.core.learning import AliasManager
+from voter_match.core.assignment import solve_sparse_assignment
+
+# Minimum score for a pair to be assignable 1-to-1
+MIN_ASSIGN_SCORE = 0.55
+# A pair the BLO explicitly rejected is capped here: still visible as a
+# candidate (>= 0.50) but never auto-assigned (< MIN_ASSIGN_SCORE).
+REJECTED_PAIR_CAP = 0.54
+
+
+def classify_tier(
+    best_res: ScoreResult | None,
+    assigned: bool,
+    top_score: float | None,
+    is_deleted: bool,
+    threshold_matched: float,
+    threshold_review: float,
+    min_voter_sim: float,
+    min_relative_sim: float,
+    has_relative: bool,
+) -> str:
+    """Single source of truth for the computer's tier verdict."""
+    if is_deleted:
+        return "लापता"
+    if best_res is not None and assigned:
+        is_matched = best_res.epic_match or (
+            best_res.score >= threshold_matched
+            and best_res.voter_name_sim >= min_voter_sim
+            and (not has_relative or best_res.relative_name_sim >= min_relative_sim)
+            and not best_res.is_sibling_guard_applied
+            and not best_res.epic_mismatch
+        )
+        if is_matched:
+            return "मिला"
+        if best_res.score >= threshold_review:
+            return "जाँचें"
+        return "लापता"
+    if top_score is not None and top_score >= threshold_review:
+        return "जाँचें"
+    return "लापता"
 
 
 @dataclass
@@ -38,6 +76,13 @@ class MatchRecordB:
     user_decision: str | None = None  # Overridden in review: 'accepted_top1', 'accepted_top2', 'accepted_top3', 'missing'
     notes: str = ""                   # BLO Field remarks (e.g. मौके पर सत्यापित, मृतक, आदि)
     is_deleted: bool = False
+    # Other List-B rows whose best candidate is the same List-A voter (possible
+    # duplicate entries in List B, hidden by the 1-to-1 assignment otherwise)
+    conflict_b_indices: list[int] = field(default_factory=list)
+    # The computer's original verdict, kept unchanged by BLO review so that
+    # accuracy can be measured against the BLO's decisions later.
+    machine_tier: str | None = None
+    machine_a_idx: int | None = None
 
 
 @dataclass
@@ -47,20 +92,57 @@ class MatchSessionResult:
     unmatched_a_indices: list[int]
     records_a: list[dict[str, Any]]
     stats: dict[str, int] = field(default_factory=dict)
+    # List-A rows flagged deleted at matching time (never "only in A")
+    excluded_a_indices: list[int] = field(default_factory=list)
 
     def recalculate_stats(self) -> None:
         """Update tier counts and unassigned A indices after BLO review decisions."""
         counts = {"मिला": 0, "जाँचें": 0, "लापता": 0, "केवल सूची A में": 0}
-        assigned_a = set()
+        # An A voter is accounted for while some B row holds it, unless the BLO
+        # explicitly confirmed that B row as missing. This matches the definition
+        # used at matching time, so recalculating without decisions is a no-op.
+        assigned_a = set(self.excluded_a_indices)
         for r in self.records_b:
             counts[r.tier] = counts.get(r.tier, 0) + 1
-            if r.assigned_a_idx is not None and r.tier == "मिला":
+            if r.assigned_a_idx is not None and not (r.user_decision and r.tier == "लापता"):
                 assigned_a.add(r.assigned_a_idx)
 
         unmatched = [i for i in range(len(self.records_a)) if i not in assigned_a]
         counts["केवल सूची A में"] = len(unmatched)
         self.unmatched_a_indices = unmatched
         self.stats = counts
+
+    def retier(
+        self,
+        threshold_matched: float,
+        threshold_review: float,
+        min_voter_sim: float,
+        min_relative_sim: float,
+        has_relative: bool = True,
+    ) -> int:
+        """Re-apply new thresholds to every record the BLO has not decided yet.
+
+        Uses the stored machine assignment and scores, so no re-matching is
+        needed. Returns the number of records whose tier changed.
+        """
+        changed = 0
+        for r in self.records_b:
+            if r.user_decision is not None:
+                continue
+            machine_a = r.machine_a_idx if r.machine_tier is not None else r.assigned_a_idx
+            top = r.top_candidates[0].score_result.score if r.top_candidates else None
+            tier = classify_tier(
+                r.best_score_result, machine_a is not None, top, r.is_deleted,
+                threshold_matched, threshold_review, min_voter_sim, min_relative_sim, has_relative,
+            )
+            r.machine_tier = tier
+            if tier != r.tier:
+                changed += 1
+            r.tier = tier
+            r.assigned_a_idx = machine_a
+            r.assigned_record_a = self.records_a[machine_a] if machine_a is not None and machine_a < len(self.records_a) else None
+        self.recalculate_stats()
+        return changed
 
 
 class ElectoralRollMatcher:
@@ -143,6 +225,22 @@ class ElectoralRollMatcher:
             else None
         )
 
+        # Pre-compute per-row flags and identity keys once (not per candidate pair)
+        deleted_a = [self.is_row_deleted(r) for r in records_a]
+        deleted_b = [self.is_row_deleted(r) for r in records_b]
+
+        def _keys(voter_cache, rel_cache):
+            keys = []
+            for i, v in enumerate(voter_cache):
+                rel = rel_cache[i].normalized if rel_cache else ""
+                keys.append(f"{v.normalized}|{rel}" if v.normalized else "")
+            return keys
+
+        mgr = self.alias_manager
+        use_rejections = bool(mgr is not None and getattr(mgr, "rejections", None))
+        keys_a = _keys(norm_cache_a_voter, norm_cache_a_rel) if use_rejections else []
+        keys_b = _keys(norm_cache_b_voter, norm_cache_b_rel) if use_rejections else []
+
         # 2. Blocking
         if progress_callback:
             progress_callback("संभावित प्रत्याशियों का चयन (Blocking)...", 20, 100)
@@ -167,6 +265,20 @@ class ElectoralRollMatcher:
             norm_cache_b_rel,
         )
 
+        # EPIC fast-path: an identical voter-ID number is always a candidate,
+        # even when the names were typed very differently.
+        epic_map = next((m for m in self.mappings if m.role == "epic" and m.is_active()), None)
+        if epic_map:
+            epic_index_a: dict[str, list[int]] = defaultdict(list)
+            for a_idx, rec in enumerate(records_a):
+                e = normalize_epic(rec.get(epic_map.col_a))
+                if e:
+                    epic_index_a[e].append(a_idx)
+            for b_idx, rec in enumerate(records_b):
+                e = normalize_epic(rec.get(epic_map.col_b))
+                if e and e in epic_index_a:
+                    b_candidates.setdefault(b_idx, set()).update(epic_index_a[e])
+
         # 3. Candidate Scoring
         if progress_callback:
             progress_callback("प्रत्याशियों का विस्तृत स्कोरिंग (Scoring)...", 45, 100)
@@ -180,8 +292,7 @@ class ElectoralRollMatcher:
 
         for b_idx in range(n_b):
             rec_b = records_b[b_idx]
-            is_del_b = self.is_row_deleted(rec_b)
-            if is_del_b:
+            if deleted_b[b_idx]:
                 continue
 
             cache_b = {voter_col_b: norm_cache_b_voter[b_idx]}
@@ -189,16 +300,25 @@ class ElectoralRollMatcher:
                 cache_b[rel_col_b] = norm_cache_b_rel[b_idx]
 
             cands_a = b_candidates.get(b_idx, set())
+            key_b = keys_b[b_idx] if use_rejections else ""
             for a_idx in cands_a:
-                rec_a = records_a[a_idx]
-                if self.is_row_deleted(rec_a):
+                if deleted_a[a_idx]:
                     continue
+                rec_a = records_a[a_idx]
 
                 cache_a = {voter_col_a: norm_cache_a_voter[a_idx]}
                 if rel_col_a and norm_cache_a_rel:
                     cache_a[rel_col_a] = norm_cache_a_rel[a_idx]
 
                 score_res = self.scorer.score_pair(rec_a, rec_b, cache_a, cache_b)
+                if (
+                    use_rejections
+                    and key_b
+                    and score_res.score > REJECTED_PAIR_CAP
+                    and mgr.is_rejected(key_b, keys_a[a_idx])
+                ):
+                    score_res.score = REJECTED_PAIR_CAP
+                    score_res.reasons.insert(0, "BLO द्वारा पूर्व में अस्वीकृत जोड़ी (Previously rejected)")
                 if score_res.score >= 0.50:
                     all_candidate_scores[b_idx].append((a_idx, score_res))
                     pair_scores[(b_idx, a_idx)] = score_res
@@ -214,24 +334,12 @@ class ElectoralRollMatcher:
         if progress_callback:
             progress_callback("सर्वोत्तम 1-to-1 मिलान निर्धारण (Optimal Assignment)...", 85, 100)
 
-        # Build sparse-to-dense cost matrix for assignment
-        # Using cost = 1.0 - score for candidates >= 0.55, else large penalty cost 10.0
-        # If n_b or n_a is 0, handle gracefully
-        assigned_pairs: dict[int, int] = {}
-        if n_b > 0 and n_a > 0:
-            # We can construct cost matrix of shape (n_b, n_a)
-            # Default unlinked cost = 2.0 (ensuring algorithm only picks candidates >= 0.55)
-            cost_matrix = np.full((n_b, n_a), 2.0, dtype=np.float32)
-
-            for (b_idx, a_idx), s_res in pair_scores.items():
-                if s_res.score >= 0.55:
-                    cost_matrix[b_idx, a_idx] = 1.0 - s_res.score
-
-            row_ind, col_ind = linear_sum_assignment(cost_matrix)
-
-            for r, c in zip(row_ind, col_ind):
-                if cost_matrix[r, c] <= (1.0 - 0.55):  # Valid candidate score >= 0.55
-                    assigned_pairs[r] = c
+        # Solve per connected component of the sparse candidate graph: identical
+        # optimum to a dense Hungarian solve, without the O(n_b * n_a) matrix.
+        assigned_pairs: dict[int, int] = solve_sparse_assignment(
+            ((b_idx, a_idx, s_res.score) for (b_idx, a_idx), s_res in pair_scores.items()),
+            min_score=MIN_ASSIGN_SCORE,
+        )
 
         # 5. Build output structures and classify tiers
         if progress_callback:
@@ -246,7 +354,7 @@ class ElectoralRollMatcher:
 
         for b_idx in range(n_b):
             rec_b = records_b[b_idx]
-            is_del = self.is_row_deleted(rec_b)
+            is_del = deleted_b[b_idx]
 
             cands_list = all_candidate_scores.get(b_idx, [])
             top_3 = [
@@ -272,32 +380,17 @@ class ElectoralRollMatcher:
                 best_res = top_3[0].score_result
 
             # Determine Tier
-            tier = "लापता"
-            if is_del:
-                tier = "लापता"
-            elif best_res and assigned_a is not None:
-                s = best_res.score
-                v_sim = best_res.voter_name_sim
-                r_sim = best_res.relative_name_sim
-
-                # 'मिला': score >= threshold_matched AND voter_sim >= min_voter AND (not has_rel or rel_sim >= min_rel)
-                is_matched = (
-                    s >= self.threshold_matched
-                    and v_sim >= self.min_voter_sim
-                    and (not has_rel or r_sim >= self.min_relative_sim)
-                    and not best_res.is_sibling_guard_applied
-                )
-
-                if is_matched:
-                    tier = "मिला"
-                elif s >= self.threshold_review:
-                    tier = "जाँचें"
-                else:
-                    tier = "लापता"
-            elif top_3 and top_3[0].score_result.score >= self.threshold_review:
-                tier = "जाँचें"
-            else:
-                tier = "लापता"
+            tier = classify_tier(
+                best_res,
+                assigned_a is not None,
+                top_3[0].score_result.score if top_3 else None,
+                is_del,
+                self.threshold_matched,
+                self.threshold_review,
+                self.min_voter_sim,
+                self.min_relative_sim,
+                has_rel,
+            )
 
             tier_counts[tier] += 1
 
@@ -310,14 +403,40 @@ class ElectoralRollMatcher:
                 top_candidates=top_3,
                 tier=tier,
                 is_deleted=is_del,
+                machine_tier=tier,
+                machine_a_idx=assigned_a,
             )
             results_b.append(match_rec)
 
+        # Cross-list duplicate check: several B rows whose strongest candidate is
+        # the same A voter. The 1-to-1 assignment gives A to only one of them,
+        # silently hiding a likely duplicate entry in List B.
+        # Only strong claims count (both names match well, not a sibling pattern),
+        # otherwise common names like "रचना देवी" would flag different people.
+        dup_score = max(0.90, self.threshold_matched)
+        claims: dict[int, list[int]] = defaultdict(list)
+        for rec in results_b:
+            if rec.is_deleted or not rec.top_candidates:
+                continue
+            top = rec.top_candidates[0]
+            sr = top.score_result
+            strong = sr.epic_match or (
+                sr.score >= dup_score
+                and sr.voter_name_sim >= self.min_voter_sim
+                and (not has_rel or sr.relative_name_sim >= self.min_relative_sim)
+                and not sr.is_sibling_guard_applied
+            )
+            if strong:
+                claims[top.a_idx].append(rec.b_idx)
+        for b_list in claims.values():
+            if len(b_list) > 1:
+                for b_i in b_list:
+                    results_b[b_i].conflict_b_indices = [o for o in b_list if o != b_i]
+
         # Unmatched A indices (exclude deleted)
-        unmatched_a: list[int] = []
-        for a_idx in range(n_a):
-            if a_idx not in assigned_a_set and not self.is_row_deleted(records_a[a_idx]):
-                unmatched_a.append(a_idx)
+        unmatched_a: list[int] = [
+            a_idx for a_idx in range(n_a) if a_idx not in assigned_a_set and not deleted_a[a_idx]
+        ]
 
         tier_counts["केवल सूची A में"] = len(unmatched_a)
 
@@ -329,4 +448,5 @@ class ElectoralRollMatcher:
             unmatched_a_indices=unmatched_a,
             records_a=records_a,
             stats=tier_counts,
+            excluded_a_indices=[i for i in range(n_a) if deleted_a[i]],
         )

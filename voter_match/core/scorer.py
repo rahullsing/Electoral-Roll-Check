@@ -39,6 +39,7 @@ class ColumnMapping:
     weight: float = 1.0
     col_type: str = "name"          # 'name', 'number', 'category', 'text'
     tolerance: int = 3              # For number/age
+    year_offset: int = 0            # Age role: expected (age_B - age_A), i.e. roll year B - roll year A
 
     def is_active(self) -> bool:
         if self.role == "serial_no":
@@ -55,6 +56,8 @@ class ScoreResult:
     is_sibling_guard_applied: bool = False
     voter_name_sim: float = 0.0
     relative_name_sim: float = 0.0
+    epic_match: bool = False        # Both EPIC (voter ID) numbers present and identical
+    epic_mismatch: bool = False     # Both EPIC numbers present but different
 
 
 def normalize_gender(val: Any) -> str:
@@ -96,6 +99,24 @@ def normalize_house_number(val: Any) -> str:
     return cleaned.lower()
 
 
+def normalize_epic(val: Any) -> str:
+    """Normalize an EPIC / voter-ID number: uppercase alphanumerics only.
+
+    OCR / typing slips O->0, I->1 in the numeric tail are repaired
+    (EPIC format: 3 letters followed by digits, e.g. ABC1234567).
+    """
+    if val is None:
+        return ""
+    raw = str(val).strip()
+    if not raw or raw.lower() in {"nan", "none", "-"}:
+        return ""
+    normalizer = get_default_normalizer()
+    s = re.sub(r"[^A-Z0-9]", "", normalizer.normalize_digits(raw).upper())
+    if len(s) > 3 and s[:3].isalpha():
+        s = s[:3] + s[3:].translate(str.maketrans("OIL", "011"))
+    return s
+
+
 def parse_age(val: Any) -> int | None:
     """Extract age as integer, converting Devanagari numerals if present."""
     if val is None:
@@ -123,6 +144,41 @@ class RecordScorer:
         self.mappings = mappings
         self.gender_map = gender_mapping or {}
         self.alias_manager = alias_manager
+        # Resolve special-role mappings once instead of on every pair
+        self.age_m = self._find_role("age")
+        self.gender_m = self._find_role("gender")
+        self.house_m = self._find_role("house_no")
+        self.epic_m = self._find_role("epic")
+        # Per-run memo caches: names (especially fathers' names) and field values
+        # repeat heavily across a roll, so identical comparisons are reused.
+        self._sim_cache: dict[tuple[str, str], tuple[float, str]] = {}
+        self._value_cache: dict[tuple[str, Any], Any] = {}
+
+    def _similarity(self, a: NormalizedName, b: NormalizedName) -> tuple[float, str]:
+        key = (a.original, b.original)
+        hit = self._sim_cache.get(key)
+        if hit is None:
+            hit = name_similarity(a, b, self.alias_manager)
+            if len(self._sim_cache) > 500_000:
+                self._sim_cache.clear()
+            self._sim_cache[key] = hit
+        return hit
+
+    def _cached(self, kind: str, fn, val: Any) -> Any:
+        try:
+            key = (kind, val)
+            if key in self._value_cache:
+                return self._value_cache[key]
+        except TypeError:  # unhashable value
+            return fn(val)
+        res = fn(val)
+        if len(self._value_cache) > 200_000:
+            self._value_cache.clear()
+        self._value_cache[key] = res
+        return res
+
+    def _find_role(self, role: str) -> ColumnMapping | None:
+        return next((m for m in self.mappings if m.role == role and m.is_active()), None)
 
     def score_pair(
         self,
@@ -151,7 +207,7 @@ class RecordScorer:
             if not m.is_active():
                 continue
 
-            if m.role in {"age", "gender", "house_no", "ward", "serial_no"}:
+            if m.role in {"age", "gender", "house_no", "ward", "serial_no", "epic"}:
                 continue
 
             val_a = record_a.get(m.col_a)
@@ -169,7 +225,7 @@ class RecordScorer:
                     else normalize_hindi_name(val_b)
                 )
 
-                sim, method = name_similarity(norm_a, norm_b, self.alias_manager)
+                sim, method = self._similarity(norm_a, norm_b)
                 per_role_scores[m.role] = sim
 
                 w = IMPORTANCE_WEIGHTS.get(m.importance, m.weight)
@@ -200,7 +256,7 @@ class RecordScorer:
                     # Also compute core similarity for sibling detection
                     core_a = normalize_hindi_name(norm_a.core)
                     core_b = normalize_hindi_name(norm_b.core)
-                    c_sim, _ = name_similarity(core_a, core_b, self.alias_manager)
+                    c_sim, _ = self._similarity(core_a, core_b)
                     voter_core_sim = c_sim
                 elif m.role == "relative_name":
                     relative_name_sim = sim
@@ -235,15 +291,20 @@ class RecordScorer:
         house_bonus = 0.0
 
         # Check Age mapping
-        age_m = next((m for m in self.mappings if m.role == "age" and m.is_active()), None)
+        age_m = self.age_m
         if age_m:
-            age_a = parse_age(record_a.get(age_m.col_a))
-            age_b = parse_age(record_b.get(age_m.col_b))
+            age_a = self._cached("age", parse_age, record_a.get(age_m.col_a))
+            age_b = self._cached("age", parse_age, record_b.get(age_m.col_b))
             if age_a is not None and age_b is not None:
-                diff = abs(age_a - age_b)
+                offset = int(getattr(age_m, "year_offset", 0) or 0)
+                # Lists from different roll years: B's age is expected to be A's age + offset
+                diff = abs((age_b - age_a) - offset)
                 if diff <= age_m.tolerance:
                     age_bonus_penalty = 0.03
-                    reasons.append(f"आयु समान/समीप ({age_a} vs {age_b} वर्ष, +3%)")
+                    if offset:
+                        reasons.append(f"आयु समायोजित समान ({age_a}+{offset} vs {age_b} वर्ष, +3%)")
+                    else:
+                        reasons.append(f"आयु समान/समीप ({age_a} vs {age_b} वर्ष, +3%)")
                 else:
                     extra = diff - age_m.tolerance
                     pen = min(0.20, extra * 0.025)
@@ -253,10 +314,10 @@ class RecordScorer:
                 reasons.append("आयु अनुपलब्ध")
 
         # Check Gender mapping
-        gender_m = next((m for m in self.mappings if m.role == "gender" and m.is_active()), None)
+        gender_m = self.gender_m
         if gender_m:
-            gen_a = normalize_gender(record_a.get(gender_m.col_a))
-            gen_b = normalize_gender(record_b.get(gender_m.col_b))
+            gen_a = self._cached("gender", normalize_gender, record_a.get(gender_m.col_a))
+            gen_b = self._cached("gender", normalize_gender, record_b.get(gender_m.col_b))
             if gen_a and gen_b:
                 if gen_a == gen_b:
                     reasons.append("लिंग समान")
@@ -267,10 +328,10 @@ class RecordScorer:
                     per_role_scores["gender"] = 0.0
 
         # Check House Number mapping
-        house_m = next((m for m in self.mappings if m.role == "house_no" and m.is_active()), None)
+        house_m = self.house_m
         if house_m:
-            h_a = normalize_house_number(record_a.get(house_m.col_a))
-            h_b = normalize_house_number(record_b.get(house_m.col_b))
+            h_a = self._cached("house", normalize_house_number, record_a.get(house_m.col_a))
+            h_b = self._cached("house", normalize_house_number, record_b.get(house_m.col_b))
             if h_a and h_b and h_a == h_b:
                 house_bonus = 0.04
                 reasons.append("मकान नं० समान (+4%)")
@@ -298,9 +359,28 @@ class RecordScorer:
                 final_score = 0.50
                 reasons.append("अनिवार्य स्तंभ ('Must Match') की शर्त पूरी नहीं हुई (अधिकतम 50%)")
 
+        # EPIC (voter ID) number: a unique identifier, so an exact match settles identity
+        epic_match = False
+        epic_mismatch = False
+        if self.epic_m:
+            e_a = self._cached("epic", normalize_epic, record_a.get(self.epic_m.col_a))
+            e_b = self._cached("epic", normalize_epic, record_b.get(self.epic_m.col_b))
+            if e_a and e_b:
+                if e_a == e_b:
+                    epic_match = True
+                    per_role_scores["epic"] = 1.0
+                    final_score = max(final_score, 0.97)
+                    reasons.insert(0, f"EPIC पहचान पत्र संख्या समान ({e_a}) — निश्चित मिलान")
+                else:
+                    epic_mismatch = True
+                    per_role_scores["epic"] = 0.0
+                    final_score -= 0.15
+                    reasons.append(f"EPIC संख्या भिन्न ({e_a} vs {e_b}, -15%, जाँच आवश्यक)")
+
         # Sibling guard: relative name >= 0.95 but voter name < 0.80 (or core voter name < 0.80) -> never "मिला"
+        # (skipped when EPIC numbers prove it is the same person)
         is_sibling = False
-        if has_relative_name and has_voter_name:
+        if has_relative_name and has_voter_name and not epic_match:
             if relative_name_sim >= 0.95 and (voter_name_sim < 0.80 or voter_core_sim < 0.80):
                 is_sibling = True
                 if final_score >= 0.85:
@@ -316,4 +396,6 @@ class RecordScorer:
             is_sibling_guard_applied=is_sibling,
             voter_name_sim=voter_name_sim,
             relative_name_sim=relative_name_sim,
+            epic_match=epic_match,
+            epic_mismatch=epic_mismatch,
         )

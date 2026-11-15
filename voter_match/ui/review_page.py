@@ -7,6 +7,7 @@ bulk high-confidence auto-approval, and keyboard-driven rapid verification.
 
 from __future__ import annotations
 import difflib
+from dataclasses import dataclass, field
 from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QColor, QFont
@@ -32,7 +33,8 @@ from PySide6.QtWidgets import (
 from voter_match.core.matcher import MatchRecordB, MatchCandidate, MatchSessionResult
 from voter_match.core.scorer import ColumnMapping
 from voter_match.storage.db import get_default_storage
-from voter_match.core.learning import get_default_alias_manager
+from voter_match.core.learning import get_default_alias_manager, make_record_key
+from voter_match.ui.tts import get_speaker, HINDI_VOICE_HELP
 from voter_match.export.excel_export import ExcelExporter
 from voter_match.ui.theme import (
     NAVY_PRIMARY,
@@ -59,6 +61,29 @@ COMMON_FIELD_REMARKS = [
     "नया मतदाता (प्रारूप 6 आवश्यक)",
     "नाम वर्तनी लिपिकीय त्रुटि (संशोधन प्रारूप 8)",
 ]
+
+
+UNDO_LIMIT = 300
+
+
+@dataclass
+class _RecordSnapshot:
+    """State of one record before a decision, plus the learning side effects."""
+    rec_idx: int
+    assigned_a_idx: int | None
+    assigned_record_a: dict[str, Any] | None
+    tier: str
+    user_decision: str | None
+    notes: str
+    aliases_added: list[tuple[str, str]] = field(default_factory=list)
+    rejections_added: list[tuple[str, str]] = field(default_factory=list)
+    rejections_removed: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class _UndoEntry:
+    label: str
+    snapshots: list[_RecordSnapshot]
 
 
 def highlight_diff_html(s1: str, s2: str) -> tuple[str, str]:
@@ -229,6 +254,8 @@ class ReviewPage(QWidget):
         self.session_id: str = "default_session"
         self.storage = get_default_storage()
         self.alias_mgr = get_default_alias_manager()
+        self.undo_stack: list[_UndoEntry] = []
+        self._tts_hint_shown = False
         self.init_ui()
         self.setup_shortcuts()
 
@@ -322,6 +349,22 @@ class ReviewPage(QWidget):
         self.lbl_b_details.setStyleSheet("font-size: 12px; color: #475569;")
         layout_b.addWidget(self.lbl_b_details)
 
+        # Possible duplicate warning (another List-B row claims the same List-A voter)
+        self.lbl_conflict = QLabel("")
+        self.lbl_conflict.setWordWrap(True)
+        self.lbl_conflict.setStyleSheet(
+            "background-color: #FFF7ED; color: #9A3412; font-weight: bold; font-size: 11px; "
+            "padding: 4px 8px; border-radius: 4px; border: 1px solid #FDBA74;"
+        )
+        self.lbl_conflict.setVisible(False)
+        layout_b.addWidget(self.lbl_conflict)
+
+        self.btn_speak = QPushButton("🔊 नाम सुनें [P]")
+        self.btn_speak.setToolTip("सूची B का नाम और प्रत्याशी-1 का नाम ज़ोर से पढ़ें (ऑफ़लाइन)")
+        self.btn_speak.setStyleSheet("font-size: 11px; padding: 4px 10px; font-weight: bold;")
+        self.btn_speak.clicked.connect(self.speak_current)
+        layout_b.addWidget(self.btn_speak)
+
         layout_b.addSpacing(6)
 
         # Field Remarks / Notes Box (BLO Field Notes for Excel)
@@ -377,6 +420,13 @@ class ReviewPage(QWidget):
         self.btn_prev = QPushButton("◀ पिछला [←]")
         self.btn_prev.clicked.connect(self.navigate_prev)
         act_box.addWidget(self.btn_prev)
+
+        self.btn_undo = QPushButton("↶ पूर्ववत् [Ctrl+Z]")
+        self.btn_undo.setToolTip("पिछला निर्णय वापस लें (Undo)")
+        self.btn_undo.setStyleSheet("font-weight: bold; padding: 6px 10px;")
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.clicked.connect(self.undo_last)
+        act_box.addWidget(self.btn_undo)
 
         self.lbl_counter = QLabel("0 / 0 मतदाता")
         self.lbl_counter.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {NAVY_PRIMARY};")
@@ -434,6 +484,9 @@ class ReviewPage(QWidget):
         QShortcut(QKeySequence("s"), self, lambda: self.btn_skip.click())
         QShortcut(QKeySequence(Qt.Key_Left), self, self.navigate_prev)
         QShortcut(QKeySequence(Qt.Key_Right), self, self.navigate_next)
+        QShortcut(QKeySequence.Undo, self, self.undo_last)
+        QShortcut(QKeySequence("P"), self, self.speak_current)
+        QShortcut(QKeySequence("p"), self, self.speak_current)
 
     def set_data(
         self,
@@ -446,6 +499,8 @@ class ReviewPage(QWidget):
         self.mappings = mappings
         self.session_result = session_result
         self.session_id = session_id
+        self.undo_stack.clear()
+        self._update_undo_button()
         self.update_progress_tracker()
         self.apply_filter()
 
@@ -551,6 +606,18 @@ class ReviewPage(QWidget):
         self.lbl_b_details.setText(" | ".join(details_list) if details_list else "-")
         self.lbl_b_details.setTextFormat(Qt.RichText)
 
+        if rec.conflict_b_indices:
+            rows = ", ".join(
+                f"#{self.records[o].record_b.get('_orig_row', o + 2)}" if 0 <= o < len(self.records) else f"#{o + 2}"
+                for o in rec.conflict_b_indices[:5]
+            )
+            self.lbl_conflict.setText(
+                f"⚠️ संभावित डुप्लिकेट: सूची B की पंक्ति {rows} का भी सर्वोत्तम प्रत्याशी यही मतदाता है"
+            )
+            self.lbl_conflict.setVisible(True)
+        else:
+            self.lbl_conflict.setVisible(False)
+
         # Set Remarks and Notes
         self.txt_custom_note.blockSignals(True)
         self.txt_custom_note.setText(rec.notes or "")
@@ -627,16 +694,78 @@ class ReviewPage(QWidget):
         rec = self.records[rec_idx]
         rec.notes = text.strip()
 
+    # --- Helpers for learning keys ---
+
+    def _cols(self, role: str) -> tuple[str | None, str | None]:
+        m = next((m for m in self.mappings if m.role == role), None)
+        return (m.col_a, m.col_b) if m else (None, None)
+
+    def _key_b(self, rec: MatchRecordB) -> str:
+        _, v_b = self._cols("voter_name")
+        _, r_b = self._cols("relative_name")
+        return make_record_key(rec.record_b.get(v_b, "") if v_b else "", rec.record_b.get(r_b, "") if r_b else "")
+
+    def _key_a(self, record_a: dict[str, Any]) -> str:
+        v_a, _ = self._cols("voter_name")
+        r_a, _ = self._cols("relative_name")
+        return make_record_key(record_a.get(v_a, "") if v_a else "", record_a.get(r_a, "") if r_a else "")
+
+    def _snapshot(self, rec_idx: int) -> _RecordSnapshot:
+        r = self.records[rec_idx]
+        return _RecordSnapshot(rec_idx, r.assigned_a_idx, r.assigned_record_a, r.tier, r.user_decision, r.notes)
+
+    def _push_undo(self, label: str, snaps: list[_RecordSnapshot]) -> None:
+        self.undo_stack.append(_UndoEntry(label, snaps))
+        if len(self.undo_stack) > UNDO_LIMIT:
+            del self.undo_stack[0]
+        self._update_undo_button()
+
+    def _update_undo_button(self) -> None:
+        if not hasattr(self, "btn_undo"):
+            return
+        self.btn_undo.setEnabled(bool(self.undo_stack))
+        self.btn_undo.setToolTip(
+            f"पूर्ववत् करें: {self.undo_stack[-1].label}" if self.undo_stack else "पूर्ववत् करने हेतु कोई निर्णय नहीं"
+        )
+
+    def _find_claimant(self, a_idx: int, exclude_rec_idx: int) -> int | None:
+        """Index of another record already holding List-A voter a_idx as 'मिला'."""
+        for i, r in enumerate(self.records):
+            if i != exclude_rec_idx and r.tier == "मिला" and r.assigned_a_idx == a_idx:
+                return i
+        return None
+
     def record_decision(self, decision_type: str, cand_idx: int | None) -> None:
         if not self.filtered_indices:
             return
 
         rec_idx = self.filtered_indices[self.current_pos]
         rec = self.records[rec_idx]
+        snap = self._snapshot(rec_idx)
 
         assigned_a_idx = None
         if cand_idx is not None and cand_idx < len(rec.top_candidates):
             chosen_cand = rec.top_candidates[cand_idx]
+
+            # Cross-list duplicate guard: this List-A voter may already be matched
+            other = self._find_claimant(chosen_cand.a_idx, rec_idx)
+            if other is not None:
+                other_row = self.records[other].record_b.get("_orig_row", self.records[other].b_idx + 2)
+                reply = QMessageBox.question(
+                    self,
+                    "संभावित डुप्लिकेट प्रविष्टि",
+                    f"यह मतदाता (सूची A) पहले से सूची B की पंक्ति #{other_row} से मिलाया जा चुका है।\n\n"
+                    "क्या सूची B में यह दोहरी (डुप्लिकेट) प्रविष्टि है?\n"
+                    "'Yes' = स्वीकार करें और 'डुप्लिकेट' टिप्पणी जोड़ें (प्रारूप-7 सूची में आएगा)\n"
+                    "'No' = रद्द करें",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+                dup_note = f"डुप्लिकेट: सूची B पंक्ति #{other_row} के समान व्यक्ति"
+                rec.notes = f"{rec.notes}; {dup_note}" if rec.notes and dup_note not in rec.notes else (rec.notes or dup_note)
+
             assigned_a_idx = chosen_cand.a_idx
             rec.assigned_a_idx = assigned_a_idx
             rec.assigned_record_a = chosen_cand.record_a
@@ -648,12 +777,30 @@ class ReviewPage(QWidget):
                 name_b = str(rec.record_b.get(voter_map.col_b, "")).strip()
                 name_a = str(chosen_cand.record_a.get(voter_map.col_a, "")).strip()
                 if name_b and name_a and name_b != name_a:
-                    self.alias_mgr.add_alias(name_b, name_a, source="user_review")
+                    if self.alias_mgr.add_alias(name_b, name_a, source="user_review"):
+                        snap.aliases_added.append((name_b, name_a))
+
+            # Negative learning: higher-ranked candidates the BLO passed over are not this person
+            rejected = rec.top_candidates[:cand_idx]
         else:
             rec.assigned_a_idx = None
             rec.assigned_record_a = None
             rec.tier = "लापता"
             rec.user_decision = "लापता (पुष्टि की गई)"
+            # None of the shown candidates is this person
+            rejected = list(rec.top_candidates)
+
+        key_b = self._key_b(rec)
+        if key_b:
+            for cand in rejected:
+                key_a = self._key_a(cand.record_a)
+                if key_a and self.alias_mgr.add_rejection(key_b, key_a):
+                    snap.rejections_added.append((key_b, key_a))
+            if assigned_a_idx is not None:
+                # An explicit acceptance overrides any earlier rejection of the same pair
+                key_a = self._key_a(rec.assigned_record_a or {})
+                if key_a and self.alias_mgr.remove_rejection(key_b, key_a):
+                    snap.rejections_removed.append((key_b, key_a))
 
         self.storage.save_decision(
             session_id=self.session_id,
@@ -663,9 +810,79 @@ class ReviewPage(QWidget):
             notes=rec.notes,
         )
 
+        self._push_undo(rec.user_decision or "निर्णय", [snap])
         self.update_progress_tracker()
         self.session_updated.emit()
         self.navigate_next()
+
+    def undo_last(self) -> None:
+        """Revert the most recent decision (or bulk approval) including its learning."""
+        if not self.undo_stack:
+            return
+        entry = self.undo_stack.pop()
+        for snap in reversed(entry.snapshots):
+            if not (0 <= snap.rec_idx < len(self.records)):
+                continue
+            r = self.records[snap.rec_idx]
+            r.assigned_a_idx = snap.assigned_a_idx
+            r.assigned_record_a = snap.assigned_record_a
+            r.tier = snap.tier
+            r.user_decision = snap.user_decision
+            r.notes = snap.notes
+            for t1, t2 in snap.aliases_added:
+                self.alias_mgr.remove_alias(t1, t2)
+            for kb, ka in snap.rejections_added:
+                self.alias_mgr.remove_rejection(kb, ka)
+            for kb, ka in snap.rejections_removed:
+                self.alias_mgr.add_rejection(kb, ka)
+            try:
+                if snap.user_decision is None:
+                    self.storage.delete_decision(self.session_id, r.b_idx)
+                else:
+                    self.storage.save_decision(
+                        session_id=self.session_id,
+                        b_idx=r.b_idx,
+                        decision=snap.user_decision,
+                        assigned_a_idx=snap.assigned_a_idx,
+                        notes=snap.notes,
+                    )
+            except Exception:
+                pass
+
+        self._update_undo_button()
+        self.update_progress_tracker()
+        self.session_updated.emit()
+
+        # Show the restored record (re-filter so a now-pending record is visible again)
+        target = entry.snapshots[0].rec_idx if entry.snapshots else None
+        self.apply_filter()
+        if target is not None and target in self.filtered_indices:
+            self.current_pos = self.filtered_indices.index(target)
+            self.show_current_record()
+
+    def speak_current(self) -> None:
+        """Read the List-B name and candidate-1 name aloud (helps judge sound-alike spellings)."""
+        if not self.filtered_indices:
+            return
+        rec = self.records[self.filtered_indices[self.current_pos]]
+        _, v_b = self._cols("voter_name")
+        _, r_b = self._cols("relative_name")
+        v_a, _ = self._cols("voter_name")
+        parts = []
+        if v_b:
+            parts.append(str(rec.record_b.get(v_b, "") or ""))
+        if r_b and rec.record_b.get(r_b):
+            parts.append(str(rec.record_b.get(r_b)))
+        if rec.top_candidates and v_a:
+            parts.append(str(rec.top_candidates[0].record_a.get(v_a, "") or ""))
+        text = " ... ".join(p for p in parts if p)
+        speaker = get_speaker()
+        if not speaker.speak(text):
+            QMessageBox.information(self, "आवाज़ उपलब्ध नहीं", "इस कंप्यूटर पर कोई Text-to-Speech इंजन उपलब्ध नहीं है।")
+            return
+        if not speaker.has_hindi_voice and not self._tts_hint_shown:
+            self._tts_hint_shown = True
+            QMessageBox.information(self, "हिंदी आवाज़", HINDI_VOICE_HELP)
 
     def bulk_auto_accept(self) -> None:
         """Bulk auto-accept top candidate for high-confidence review items (> 85%)."""
@@ -695,6 +912,8 @@ class ReviewPage(QWidget):
         if reply != QMessageBox.Yes:
             return
 
+        index_of = {id(r): i for i, r in enumerate(self.records)}
+        snaps = [self._snapshot(index_of[id(r)]) for r in pending_high]
         for rec in pending_high:
             chosen_cand = rec.top_candidates[0]
             rec.assigned_a_idx = chosen_cand.a_idx
@@ -710,6 +929,7 @@ class ReviewPage(QWidget):
                 notes=rec.notes,
             )
 
+        self._push_undo(f"स्वतः-स्वीकृति ({len(pending_high)})", snaps)
         self.update_progress_tracker()
         self.session_updated.emit()
         self.apply_filter()

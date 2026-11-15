@@ -8,14 +8,38 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from voter_match.core.phonetic import hindi_phonetic_key
+from voter_match.core.transliterate import has_latin, transliterate_roman_to_devanagari
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Bound for the per-normalizer memo cache (names repeat heavily: fathers, surnames)
+_NORMALIZE_CACHE_MAX = 200_000
+
+def _resolve_data_dir() -> Path:
+    candidates = []
+    if hasattr(sys, "_MEIPASS"):
+        meipass = Path(sys._MEIPASS)
+        candidates.extend([
+            meipass / "voter_match" / "data",
+            meipass / "data",
+        ])
+    pkg_data = Path(__file__).resolve().parent.parent / "data"
+    candidates.append(pkg_data)
+    candidates.append(Path.cwd() / "voter_match" / "data")
+    candidates.append(Path.cwd() / "data")
+
+    for c in candidates:
+        if (c / "rules_default.json").exists():
+            return c
+    return pkg_data
+
+
+DATA_DIR = _resolve_data_dir()
 DEFAULT_RULES_PATH = DATA_DIR / "rules_default.json"
 DEFAULT_STOPWORDS_PATH = DATA_DIR / "stopwords_default.json"
 
@@ -74,6 +98,10 @@ class HindiNormalizer:
             norm_sw = self.apply_rules(sw.strip())
             if norm_sw:
                 self.normalized_stopwords.add(norm_sw)
+
+        # Memo cache: raw text -> NormalizedName (treat returned objects as read-only)
+        self._cache: dict[str, NormalizedName] = {}
+        self.transliterate_roman = True
 
         # Regex for Devanagari digits to English digits
         self.digit_map = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -140,16 +168,32 @@ class HindiNormalizer:
 
         return filtered
 
+    def clear_cache(self) -> None:
+        """Invalidate memoised results (call after editing rules or stopwords)."""
+        self._cache.clear()
+
     def normalize(self, text: str | Any) -> NormalizedName:
-        """Produce full NormalizedName dataclass representation."""
+        """Produce full NormalizedName dataclass representation (memoised)."""
         if text is None:
             text = ""
         raw = str(text).strip()
         if not raw:
             return NormalizedName(original="")
 
-        # 1. Clean form
+        cached = self._cache.get(raw)
+        if cached is not None:
+            return cached
+        result = self._normalize_uncached(raw)
+        if len(self._cache) >= _NORMALIZE_CACHE_MAX:
+            self._cache.clear()
+        self._cache[raw] = result
+        return result
+
+    def _normalize_uncached(self, raw: str) -> NormalizedName:
+        # 1. Clean form (Roman-script names are transliterated to Devanagari first)
         clean = unicodedata.normalize("NFC", raw)
+        if self.transliterate_roman and has_latin(clean):
+            clean = unicodedata.normalize("NFC", transliterate_roman_to_devanagari(clean))
 
         # 2. Fully normalized string
         norm = self.apply_rules(clean)
