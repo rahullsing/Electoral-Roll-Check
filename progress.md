@@ -5,13 +5,42 @@ Offline Windows Application for Fuzzy Hindi Voter-List Matching (बूथ ल�
 ## 📌 Status Dashboard
 - **Total Modules**: 14 Major Components
 - **Completed**: 14 / 14 (100% Complete)
-- **Status**: Production Quality, Full Code Written, All 22 Unit, Integration & UI Tests Passing!
+- **Status**: Production Quality, Full Code Written, All 24 Unit, Integration & UI Tests Passing!
 - **Real-World Testing**: Verified against actual user rolls `Chanchpur_Bhatela_Voter_List_2026_Hindi.xlsx` (649 rows) vs `Chanchpur_Bhatela_Check_List_B.xlsx` (707 rows) in 1.23s!
 - **Target Audience**: Booth Level Officers (BLOs) / Primary School Teachers in Uttar Pradesh
+- **GitHub Repository**: [rahullsing/Electoral-Roll-Check](https://github.com/rahullsing/Electoral-Roll-Check.git) (Synced & Pushed to `main`)
+- **Executable**: Compiled standalone Windows package at `dist/ElectoralRollCheck/ElectoralRollCheck.exe` (20.2 MB) + 1-click launcher `run_app.bat`
 
 ---
 
 ## 🌟 Key Innovations & Recent Upgrades (Latest Sprint)
+1. **Criteria Filter Dropdown & Clickable KPI Pills (Screen 3 - मिलान परिणाम)**:
+   - Added criteria filter dropdown (`combo_criteria`):
+     - `📋 सभी परिणाम (All Results)`
+     - `🟢 केवल मिला (Matched Only)`
+     - `🟡 केवल जाँचें (Needs Review Only)`
+     - `🔴 केवल नहीं मिला / लापता (Missing in A Only)`
+     - `🔵 केवल सूची A में (Only in List A)`: Displays all unmatched reference records with soft blue badge, row number, paper roll serial number, voter name, relative name, and explanation.
+   - **Direct Pill Click Filtering**: Clicking any KPI pill (`CompactStatPill`) immediately filters the results table to that criteria.
+   - **Live Text Search**: Added real-time search box (`txt_search`) filtering by voter name, relative name, or paper roll serial number.
+   - **Filtered Count Badge**: Live counter (`दिखाए गए: X / Y`).
+2. **Complete Session Persistence & Reopening (`💾 सत्र सहेजें / 📂 सत्र खोलें`)**:
+   - Built `voter_match/storage/session_manager.py` with lossless serialization of source records, column mappings, candidates, verification decisions, field remarks, and statistics.
+   - Dual storage engines: Local SQLite database (`saved_sessions` table) and portable `.vsession` files for easy sharing via USB pen drives.
+   - Intuitive dialogs: `SaveSessionDialog` and `OpenSessionDialog` accessible from the top banner, Results page, and Review page.
+   - Reopen any existing session with 1 click: all files, mappings, decisions, and results are restored without re-uploading files!
+   - Background auto-save to `__autosave_latest__` for crash protection and automatic recovery.
+3. **Comprehensive Bilingual User Guide (`USER_GUIDE.md`)**:
+   - Detailed operational instructions tailored for BLOs and government teachers.
+   - Covers file loading, sheet selection, Devanagari column mapping, paper roll numbers, criteria filtering, side-by-side review, keyboard shortcuts, field notes, session saving/loading, and 5-sheet Excel / printable PDF reports.
+4. **Standalone Windows Executable (`.exe`) Compilation**:
+   - Resolved PyInstaller spec pathing (`Path(SPECPATH)`).
+   - Compiled complete distribution into `dist\ElectoralRollCheck\ElectoralRollCheck.exe` (20.2 MB).
+   - Created double-click batch launcher `run_app.bat`.
+5. **Git Repository Setup & Sync**:
+   - Initialized Git repository, configured `.gitignore` (safely ignoring caches, logs, databases, and build artifacts).
+   - Configured remote `origin https://github.com/rahullsing/Electoral-Roll-Check.git`.
+   - Rebased on top of remote initial commit and pushed cleanly to `main` branch.
 1. **Elimination of Duplicate Next Buttons & Clean Forward Workflow**:
    - **Screen 2 ("स्तंभ मिलान")**: Removed redundant `bottom_bar` and duplicate `btn_run_bottom`. Unified into a single prominent `btn_run` ("🚀 मिलान प्रारंभ करें (Start Matching) ➔") in the top action header.
    - **Screen 3 ("मिलान परिणाम")**: Removed duplicate bottom review button. Unified into a single `btn_review` ("🔍 स्थलीय सत्यापन (Review) पर आगे बढ़ें ➔") in the top toolbar alongside Excel and PDF export buttons.
