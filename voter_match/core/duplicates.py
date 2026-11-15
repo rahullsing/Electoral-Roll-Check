@@ -49,6 +49,9 @@ class DuplicateDetector:
         gender_col: str | None = None,
         house_col: str | None = None,
         score_threshold: float = 0.92,
+        min_voter_sim: float = 0.90,
+        min_relative_sim: float = 0.85,
+        voter_only_min_sim: float = 0.97,
     ):
         self.voter_col = voter_col
         self.rel_col = rel_col
@@ -56,6 +59,9 @@ class DuplicateDetector:
         self.gender_col = gender_col
         self.house_col = house_col
         self.score_threshold = score_threshold
+        self.min_voter_sim = min_voter_sim
+        self.min_relative_sim = min_relative_sim
+        self.voter_only_min_sim = voter_only_min_sim
 
         # Setup internal mappings
         mappings = [
@@ -113,24 +119,6 @@ class DuplicateDetector:
             rel_norm_cache_b=norm_rel,
         )
 
-        # Union-Find for clustering
-        parent = list(range(n))
-
-        def find(i: int) -> int:
-            path = []
-            while parent[i] != i:
-                path.append(i)
-                i = parent[i]
-            for node in path:
-                parent[node] = i
-            return i
-
-        def union(i: int, j: int) -> None:
-            root_i = find(i)
-            root_j = find(j)
-            if root_i != root_j:
-                parent[root_j] = root_i
-
         if progress_callback:
             progress_callback("डुप्लिकेट स्कोरिंग...", 60, 100)
 
@@ -155,15 +143,27 @@ class DuplicateDetector:
                     cache_a[self.rel_col] = norm_rel[a_idx]
 
                 s_res = self.scorer.score_pair(records[a_idx], records[b_idx], cache_a, cache_b)
-                if s_res.score >= self.score_threshold and not s_res.is_sibling_guard_applied:
-                    union(a_idx, b_idx)
+                if self.is_duplicate_pair(s_res, records[a_idx], records[b_idx]):
                     matched_pairs.append((a_idx, b_idx, s_res.score, s_res.reasons))
 
-        # Group indices by root parent
-        groups: dict[int, list[int]] = defaultdict(list)
-        for i in range(n):
-            root = find(i)
-            groups[root].append(i)
+        # Complete-linkage grouping: strongest pairs first, and two groups are
+        # merged only if EVERY member of one is a duplicate of every member of
+        # the other. (Plain union-find chained A~B, B~C into one group even when
+        # A and C were clearly different people.)
+        dup_pairs = {(a, b) for a, b, _, _ in matched_pairs}
+        group_of: dict[int, list[int]] = {}
+        for a_i, b_i, _sc, _r in sorted(matched_pairs, key=lambda p: -p[2]):
+            ga = group_of.get(a_i, [a_i])
+            gb = group_of.get(b_i, [b_i])
+            if ga is gb:
+                continue
+            if all((min(x, y), max(x, y)) in dup_pairs for x in ga for y in gb):
+                merged = ga + gb
+                for idx in merged:
+                    group_of[idx] = merged
+        groups: dict[int, list[int]] = {}
+        for members in group_of.values():
+            groups[id(members)] = sorted(members)
 
         # Create DuplicateCluster objects for groups of size >= 2
         clusters: list[DuplicateCluster] = []
@@ -200,6 +200,33 @@ class DuplicateDetector:
         # Sort clusters by size descending
         clusters.sort(key=lambda c: len(c.records), reverse=True)
         return clusters
+
+    def _same_age(self, rec_a, rec_b, max_diff: int = 1) -> bool:
+        from voter_match.core.scorer import parse_age
+
+        if not self.age_col or rec_a is None or rec_b is None:
+            return False
+        a, b = parse_age(rec_a.get(self.age_col)), parse_age(rec_b.get(self.age_col))
+        return a is not None and b is not None and abs(a - b) <= max_diff
+
+    def is_duplicate_pair(self, s_res, rec_a=None, rec_b=None) -> bool:
+        """Strict rule: same person entered twice, not a namesake or sibling."""
+        if s_res.is_sibling_guard_applied or getattr(s_res, "age_conflict", False):
+            return False
+        if s_res.score < self.score_threshold:
+            return False
+        if self.rel_col:
+            if s_res.voter_name_sim >= self.min_voter_sim and s_res.relative_name_sim >= self.min_relative_sim:
+                return True
+            # Typing slip in the voter name (राकेश / राकश) with an identical
+            # relative and the same age: still the same person.
+            return (
+                s_res.voter_name_sim >= 0.85
+                and s_res.relative_name_sim >= 0.95
+                and self._same_age(rec_a, rec_b)
+            )
+        # Without a relative column a near-exact name is required
+        return s_res.voter_name_sim >= self.voter_only_min_sim
 
     @staticmethod
     def group_by_household(
