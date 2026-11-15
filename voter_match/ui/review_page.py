@@ -7,6 +7,8 @@ bulk high-confidence auto-approval, and keyboard-driven rapid verification.
 
 from __future__ import annotations
 import difflib
+import html
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from PySide6.QtCore import Qt, Signal
@@ -34,7 +36,8 @@ from voter_match.core.matcher import MatchRecordB, MatchCandidate, MatchSessionR
 from voter_match.core.scorer import ColumnMapping
 from voter_match.storage.db import get_default_storage
 from voter_match.core.learning import get_default_alias_manager, make_record_key
-from voter_match.ui.i18n import mark_translatable
+from voter_match.ui.copy_support import enable_table_copy, make_copy_button, make_selectable, record_to_tsv
+from voter_match.ui.i18n import display_gender, mark_translatable, on_language_changed, skip_translation, tr, trf
 from voter_match.ui.tts import get_speaker, HINDI_VOICE_HELP
 from voter_match.export.excel_export import ExcelExporter
 from voter_match.ui.theme import (
@@ -82,6 +85,14 @@ def role_label(role: str) -> str:
     return ROLE_LABELS.get(role, role)
 
 
+def detail_value(role: str, value) -> str:
+    """A record field for display; only gender values are localised."""
+    s = "" if value is None else str(value).strip()
+    if s.lower() == "nan":
+        return ""
+    return display_gender(s) if role == "gender" else s
+
+
 @dataclass
 class _RecordSnapshot:
     """State of one record before a decision, plus the learning side effects."""
@@ -102,17 +113,34 @@ class _UndoEntry:
     snapshots: list[_RecordSnapshot]
 
 
+# One Devanagari akshara: consonant(+nukta) [+ halant + consonant]* + vowel signs,
+# or an independent vowel + signs, or any other single character.
+_AKSHARA_RE = re.compile(
+    r"(?:[\u0915-\u0939\u0958-\u095F]\u093C?(?:\u094D\u200D?[\u0915-\u0939\u0958-\u095F]\u093C?)*"
+    r"|[\u0904-\u0914\u0960\u0961\u0972-\u097F])"
+    r"[\u093A\u093B\u093E-\u094C\u094E\u094F\u0955-\u0957\u0962\u0963\u0900-\u0903]*\u094D?"
+    r"|.",
+    re.S,
+)
+
+
+def split_aksharas(text: str) -> list[str]:
+    """Split into whole letters so a matra is never separated from its consonant
+    (separated matras render alone with a dotted circle, e.g. 'मीन◌ा')."""
+    return _AKSHARA_RE.findall(text or "")
+
+
 def highlight_diff_html(s1: str, s2: str) -> tuple[str, str]:
-    """Generate HTML highlighting identical vs differing characters with high contrast."""
-    s1 = s1 or ""
-    s2 = s2 or ""
-    matcher = difflib.SequenceMatcher(None, s1, s2)
+    """Generate HTML highlighting identical vs differing letters with high contrast."""
+    a = split_aksharas(s1 or "")
+    b = split_aksharas(s2 or "")
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     h1 = []
     h2 = []
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        sub1 = s1[i1:i2]
-        sub2 = s2[j1:j2]
+        sub1 = html.escape("".join(a[i1:i2]))
+        sub2 = html.escape("".join(b[j1:j2]))
         if tag == "equal":
             h1.append(f"<span style='color: #15803D; font-weight: bold;'>{sub1}</span>")
             h2.append(f"<span style='color: #15803D; font-weight: bold;'>{sub2}</span>")
@@ -194,8 +222,9 @@ class CandidateCardWidget(QFrame):
         kram_col_a = serial_map.col_a if serial_map else None
         cand_kram = str(rec_a.get(kram_col_a, "")) if kram_col_a and kram_col_a in rec_a else ""
         if cand_kram:
-            lbl_kram = QLabel(f"🔢 कागज़ी क्र०: <b>{cand_kram}</b>")
+            lbl_kram = skip_translation(QLabel(trf("🔢 कागज़ी क्र०: <b>{}</b>", html.escape(cand_kram))))
             lbl_kram.setStyleSheet("color: #6D28D9; background-color: #EDE9FE; padding: 2px 8px; border-radius: 4px; font-size: 11px; border: 1px solid #DDD6FE;")
+            make_selectable(lbl_kram)
             hdr.addWidget(lbl_kram)
 
         hdr.addStretch()
@@ -206,6 +235,17 @@ class CandidateCardWidget(QFrame):
             f"border-radius: 4px; padding: 2px 8px; font-size: 12px;"
         )
         hdr.addWidget(lbl_score)
+
+        btn_copy = QPushButton()
+        btn_copy.setStyleSheet("font-size: 11px; padding: 2px 8px; font-weight: bold;")
+        btn_copy.setCursor(Qt.PointingHandCursor)
+        make_copy_button(
+            btn_copy,
+            lambda h: record_to_tsv(rec_a, self.mappings, "a", with_headers=h),
+            "📋 कॉपी",
+            "इस प्रत्याशी (सूची A) का विवरण Excel पंक्ति के रूप में कॉपी करें — राइट-क्लिक: शीर्षक सहित",
+        )
+        hdr.addWidget(btn_copy)
         layout.addLayout(hdr)
 
         # Names with Character Diff Highlighting
@@ -215,14 +255,18 @@ class CandidateCardWidget(QFrame):
         _, diff_voter = highlight_diff_html(self.query_voter_name, cand_voter)
         _, diff_rel = highlight_diff_html(self.query_rel_name, cand_rel)
 
-        lbl_voter = QLabel(f"मतदाता: <span style='font-size: 15px; font-weight: bold;'>{diff_voter}</span>")
+        # Voter data must never pass through the translator: build the caption
+        # with tr() and exclude the label from automatic translation.
+        lbl_voter = skip_translation(QLabel(f"{tr('मतदाता')}: <span style='font-size: 15px; font-weight: bold;'>{diff_voter}</span>"))
         lbl_voter.setTextFormat(Qt.RichText)
         lbl_voter.setStyleSheet("font-size: 12px; color: #0F172A;")
+        make_selectable(lbl_voter)
         layout.addWidget(lbl_voter)
 
-        lbl_rel = QLabel(f"सम्बन्धी: <span style='font-size: 14px; font-weight: bold;'>{diff_rel}</span>")
+        lbl_rel = skip_translation(QLabel(f"{tr('सम्बन्धी')}: <span style='font-size: 14px; font-weight: bold;'>{diff_rel}</span>"))
         lbl_rel.setTextFormat(Qt.RichText)
         lbl_rel.setStyleSheet("font-size: 12px; color: #0F172A;")
+        make_selectable(lbl_rel)
         layout.addWidget(lbl_rel)
 
         # Details Grid
@@ -230,24 +274,27 @@ class CandidateCardWidget(QFrame):
         for m in self.mappings:
             if m.role in {"voter_name", "relative_name"} or not m.col_a:
                 continue
-            val = str(rec_a.get(m.col_a, "") or "")
+            val = detail_value(m.role, rec_a.get(m.col_a, ""))
             if val:
-                details_list.append(f"<b>{role_label(m.role)}:</b> {val}")
+                details_list.append(f"<b>{tr(role_label(m.role))}:</b> {html.escape(val)}")
 
         if details_list:
-            lbl_det = QLabel(" | ".join(details_list))
+            lbl_det = skip_translation(QLabel(" | ".join(details_list)))
             lbl_det.setTextFormat(Qt.RichText)
             lbl_det.setStyleSheet("font-size: 11px; color: #475569;")
+            make_selectable(lbl_det)
             layout.addWidget(lbl_det)
 
         # Reasons
         if score_res.reasons:
             reasons_text = " • " + " • ".join(score_res.reasons[:3])
             lbl_reasons = QLabel(reasons_text)
+            lbl_reasons.setWordWrap(True)  # long reasons must not force sideways scrolling
             lbl_reasons.setStyleSheet(
                 "color: #475569; font-size: 11px; background-color: #F8FAFC; "
                 "padding: 3px 6px; border-radius: 4px; border: 1px solid #E2E8F0;"
             )
+            make_selectable(lbl_reasons)
             layout.addWidget(lbl_reasons)
 
 
@@ -271,6 +318,7 @@ class ReviewPage(QWidget):
         self._tts_hint_shown = False
         self.init_ui()
         self.setup_shortcuts()
+        on_language_changed(lambda _lang: self.show_current_record() if self.records else None)
 
     def init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -348,20 +396,21 @@ class ReviewPage(QWidget):
         layout_b.setContentsMargins(8, 10, 8, 8)
         layout_b.setSpacing(6)
 
-        self.lbl_b_orig_row = QLabel("मूल फ़ाइल पंक्ति: -")
+        self.lbl_b_orig_row = skip_translation(QLabel(tr("मूल फ़ाइल पंक्ति: -")))
         self.lbl_b_orig_row.setStyleSheet("color: #64748B; font-size: 11px;")
         layout_b.addWidget(self.lbl_b_orig_row)
 
-        self.lbl_b_name = QLabel("नाम: -")
+        self.lbl_b_name = skip_translation(QLabel(tr("नाम: -")))
         self.lbl_b_name.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {NAVY_PRIMARY}; margin: 2px 0;")
         layout_b.addWidget(self.lbl_b_name)
 
-        self.lbl_b_rel = QLabel("सम्बन्धी का नाम: -")
+        self.lbl_b_rel = skip_translation(QLabel(tr("सम्बन्धी का नाम: -")))
         self.lbl_b_rel.setStyleSheet("font-size: 15px; font-weight: bold; color: #334155; margin-bottom: 4px;")
         layout_b.addWidget(self.lbl_b_rel)
 
         # Compact details row
-        self.lbl_b_details = QLabel("विवरण: -")
+        self.lbl_b_details = skip_translation(QLabel(tr("विवरण: -")))
+        make_selectable(self.lbl_b_orig_row, self.lbl_b_name, self.lbl_b_rel, self.lbl_b_details)
         self.lbl_b_details.setStyleSheet("font-size: 12px; color: #475569;")
         layout_b.addWidget(self.lbl_b_details)
 
@@ -379,7 +428,23 @@ class ReviewPage(QWidget):
         self.btn_speak.setToolTip("सूची B का नाम और प्रत्याशी-1 का नाम ज़ोर से पढ़ें (ऑफ़लाइन)")
         self.btn_speak.setStyleSheet("font-size: 11px; padding: 4px 10px; font-weight: bold;")
         self.btn_speak.clicked.connect(self.speak_current)
-        layout_b.addWidget(self.btn_speak)
+
+        self.btn_copy_b = QPushButton()
+        self.btn_copy_b.setStyleSheet("font-size: 11px; padding: 4px 10px; font-weight: bold;")
+        self.btn_copy_b.setCursor(Qt.PointingHandCursor)
+        make_copy_button(
+            self.btn_copy_b,
+            self._current_b_tsv,
+            "📋 विवरण कॉपी करें [Ctrl+Shift+C]",
+            "सूची B के इस मतदाता का पूरा विवरण Excel पंक्ति के रूप में कॉपी करें — राइट-क्लिक: शीर्षक सहित",
+            persistent=True,
+        )
+
+        speak_row = QHBoxLayout()
+        speak_row.setSpacing(6)
+        speak_row.addWidget(self.btn_speak, stretch=1)
+        speak_row.addWidget(self.btn_copy_b, stretch=1)
+        layout_b.addLayout(speak_row)
 
         layout_b.addSpacing(6)
 
@@ -506,6 +571,7 @@ class ReviewPage(QWidget):
         QShortcut(QKeySequence(Qt.Key_Right), self, self.navigate_next)
         QShortcut(QKeySequence.Undo, self, self.undo_last)
         QShortcut(QKeySequence("P"), self, self.speak_current)
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, self.btn_copy_b.click)
         QShortcut(QKeySequence("p"), self, self.speak_current)
 
     def set_data(
@@ -567,14 +633,21 @@ class ReviewPage(QWidget):
         self.current_pos = 0
         self.show_current_record()
 
+    def _current_b_tsv(self, with_headers: bool = False) -> str:
+        """Excel row for the List B voter currently on screen (original values)."""
+        if not self.filtered_indices:
+            return ""
+        rec = self.records[self.filtered_indices[self.current_pos]]
+        return record_to_tsv(rec.record_b, self.mappings, "b", with_headers=with_headers)
+
     def show_current_record(self) -> None:
         total = len(self.filtered_indices)
         if total == 0:
             self.lbl_counter.setText("0 / 0 मतदाता")
-            self.lbl_b_orig_row.setText("कोई रिकॉर्ड उपलब्ध नहीं।")
-            self.lbl_b_name.setText("नाम: -")
-            self.lbl_b_rel.setText("सम्बन्धी का नाम: -")
-            self.lbl_b_details.setText("विवरण: -")
+            self.lbl_b_orig_row.setText(tr("कोई रिकॉर्ड उपलब्ध नहीं।"))
+            self.lbl_b_name.setText(tr("नाम: -"))
+            self.lbl_b_rel.setText(tr("सम्बन्धी का नाम: -"))
+            self.lbl_b_details.setText(tr("विवरण: -"))
             self.txt_custom_note.blockSignals(True)
             self.txt_custom_note.setText("")
             self.txt_custom_note.blockSignals(False)
@@ -600,24 +673,26 @@ class ReviewPage(QWidget):
 
         orig_row = rec_b.get("_orig_row", rec.b_idx + 2)
         if b_kram_val:
-            self.lbl_b_orig_row.setText(f"🔢 कागज़ी क्र०: <b style='color:#6D28D9; font-size:13px;'>{b_kram_val}</b> | मूल पंक्ति: #{orig_row} | ID: #{rec.b_idx + 1}")
+            self.lbl_b_orig_row.setText(trf(
+                "🔢 कागज़ी क्र०: <b style='color:#6D28D9; font-size:13px;'>{}</b> | मूल पंक्ति: #{} | ID: #{}",
+                html.escape(b_kram_val), orig_row, rec.b_idx + 1))
         else:
-            self.lbl_b_orig_row.setText(f"मूल पंक्ति: #{orig_row} | आंतरिक ID: #{rec.b_idx + 1}")
+            self.lbl_b_orig_row.setText(trf("मूल पंक्ति: #{} | आंतरिक ID: #{}", orig_row, rec.b_idx + 1))
 
         b_voter_name = str(rec_b.get(voter_col_b, "") or "")
         b_rel_name = str(rec_b.get(rel_col_b, "") or "")
 
-        self.lbl_b_name.setText(f"नाम: {b_voter_name}")
-        self.lbl_b_rel.setText(f"सम्बन्धी: {b_rel_name}")
+        self.lbl_b_name.setText(f"{tr('नाम')}: {b_voter_name}")
+        self.lbl_b_rel.setText(f"{tr('सम्बन्धी')}: {b_rel_name}")
 
         # Details string
         details_list = []
         for m in self.mappings:
             if m.role in {"voter_name", "relative_name"} or not m.col_b:
                 continue
-            val = str(rec_b.get(m.col_b, "") or "")
+            val = detail_value(m.role, rec_b.get(m.col_b, ""))
             if val:
-                details_list.append(f"<b>{role_label(m.role)}:</b> {val}")
+                details_list.append(f"<b>{tr(role_label(m.role))}:</b> {html.escape(val)}")
 
         self.lbl_b_details.setText(" | ".join(details_list) if details_list else "-")
         self.lbl_b_details.setTextFormat(Qt.RichText)

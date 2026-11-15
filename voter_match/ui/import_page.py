@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
 from voter_match.ui.theme import (
     NAVY_PRIMARY,
     TEXT_DARK,
@@ -119,6 +120,7 @@ class FilePreviewWidget(QGroupBox):
             f"QTableWidget::item {{ color: {TEXT_DARK}; padding: 4px; }}"
         )
         self.table_preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        enable_table_copy(self.table_preview, read_only=True)
         layout.addWidget(self.table_preview, stretch=1)
 
     def browse_file(self) -> None:

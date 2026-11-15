@@ -30,7 +30,8 @@ from voter_match.core.matcher import MatchSessionResult
 from voter_match.core.scorer import ColumnMapping
 from voter_match.export.excel_export import ExcelExporter
 from voter_match.export.pdf_export import PdfExporter
-from voter_match.ui.i18n import mark_translatable
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
+from voter_match.ui.i18n import keep_item, mark_data_columns, mark_translatable, on_language_changed, tr, trf
 from voter_match.ui.theme import (
     fit_table_columns,
     scoped_style,
@@ -121,7 +122,10 @@ class ResultsPage(QWidget):
         super().__init__(parent)
         self.session_result: MatchSessionResult | None = None
         self.mappings: list[ColumnMapping] = []
+        self._kram_cols: tuple[str | None, str | None] = (None, None)
         self.init_ui()
+        # rebuild so the protected headings are re-created in the new language
+        on_language_changed(lambda _lang: self.populate_table() if self.session_result else None)
 
     def init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -250,6 +254,7 @@ class ResultsPage(QWidget):
         self.table_results = mark_translatable(QTableWidget())
         self.table_results.setAlternatingRowColors(True)
         self.table_results.verticalHeader().setVisible(False)  # क्र० column already numbers rows
+        enable_table_copy(self.table_results, read_only=True)
         self.table_results.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Guaranteed high-contrast stylesheet: Dark Navy Header with crisp bold white text
@@ -379,6 +384,7 @@ class ResultsPage(QWidget):
 
         lbl_b_kram = f"क्र० [{kram_col_b}]" if kram_col_b else "क्र० (B)"
         lbl_a_kram = f"क्र० [{kram_col_a}]" if kram_col_a else "क्र० (A)"
+        self._kram_cols = (kram_col_b, kram_col_a)
 
         dark_text_color = QColor(15, 23, 42)
         font_bold = QFont("Nirmala UI", 10, QFont.Bold)
@@ -401,6 +407,7 @@ class ResultsPage(QWidget):
             ]
             self.table_results.setColumnCount(len(headers))
             self.table_results.setHorizontalHeaderLabels(headers)
+            self._protect_data_columns()
 
             unmatched_indices = self.session_result.unmatched_a_indices
             filtered_indices = []
@@ -529,6 +536,7 @@ class ResultsPage(QWidget):
         ]
         self.table_results.setColumnCount(len(headers))
         self.table_results.setHorizontalHeaderLabels(headers)
+        self._protect_data_columns()
         self.table_results.setRowCount(len(filtered_recs))
 
         for row_i, (orig_idx, r, rec_b, rec_a, vb_val, rb_val, kb_val, va_val, ra_val, ka_val) in enumerate(filtered_recs):
@@ -612,6 +620,16 @@ class ResultsPage(QWidget):
             f"दिखाए गए रिकॉर्ड्स: {len(filtered_recs):,} / {len(recs):,}"
         )
         fit_table_columns(self.table_results)
+
+    def _protect_data_columns(self) -> None:
+        """Serial numbers and names are voter data: never translated. The two
+        'क्र० [column name]' headings carry the user's column names."""
+        mark_data_columns(self.table_results, {1, 2, 5, 6, 7, 8})
+        for col, src in ((1, self._kram_cols[0]), (2, self._kram_cols[1])):
+            h = self.table_results.horizontalHeaderItem(col)
+            if h is not None:
+                h.setText(trf("क्र० [{}]", src) if src else tr("क्र० (B)" if col == 1 else "क्र० (A)"))
+                keep_item(h)
 
     def export_excel(self) -> None:
         if not self.session_result:

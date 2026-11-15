@@ -59,6 +59,7 @@ from voter_match.ui.i18n import (
     skip_translation,
     set_language,
     tr,
+    trf,
 )
 from voter_match.ui.theme import GLOBAL_QSS, NAVY_PRIMARY, scoped_style
 
@@ -336,9 +337,17 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_review)
 
         self.page_duplicates = DuplicatesPage()
+        # Duplicates use the live Step-2 mapping (falls back to the last matched mapping)
+        self.page_duplicates.mapping_provider = lambda: (
+            [c.get_mapping() for c in self.page_mapping.role_cards] if self.page_mapping.role_cards else self.mappings
+        )
         self.stack.addWidget(self.page_duplicates)
 
         self.page_search = SearchPage()
+        # Quick Search follows the live Step-2 mapping (falls back to the last matched mapping)
+        self.page_search.mapping_provider = lambda: (
+            [c.get_mapping() for c in self.page_mapping.role_cards] if self.page_mapping.role_cards else self.mappings
+        )
         self.stack.addWidget(self.page_search)
 
         self.page_settings = SettingsPage()
@@ -460,11 +469,13 @@ class MainWindow(QMainWindow):
             elapsed = time.monotonic() - self._match_started_at
             remaining = elapsed * (100 - pct) / pct
             if remaining >= 1:
-                eta = f"  (शेष समय लगभग {int(remaining // 60)} मि. {int(remaining % 60)} से.)" if remaining >= 60 \
-                    else f"  (शेष समय लगभग {int(remaining)} सेकंड)"
-        self.lbl_progress_status.setText(msg + eta)
+                eta = trf("  (शेष समय लगभग {} मि. {} से.)", int(remaining // 60), int(remaining % 60)) \
+                    if remaining >= 60 else trf("  (शेष समय लगभग {} सेकंड)", int(remaining))
+        # translate the two parts separately: the joined text matches no single phrase
+        text = tr(msg) + eta
+        self.lbl_progress_status.setText(text)
         self.pbar.setValue(pct)
-        self.status_bar.showMessage(msg + eta)
+        self.status_bar.showMessage(text)
 
     def on_matching_finished(self, result: MatchSessionResult) -> None:
         self.progress_panel.setVisible(False)
@@ -584,42 +595,38 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Built from separately translated pieces (a long joined text matches no phrase)
         def block(rep, title):
-            return (
-                f"<b>{title}</b> (मिला ≥ {int(rep.thr_matched * 100)}%, जाँचें ≥ {int(rep.thr_review * 100)}%)<br>"
-                f"• स्वतः 'मिला' जिनमें कंप्यूटर सही: <b>{rep.auto_correct}/{rep.auto_matched}</b> "
-                f"(परिशुद्धता {rep.precision * 100:.1f}%)<br>"
-                f"• वास्तविक मिलानों में से स्वतः पकड़े गए: {rep.recall * 100:.1f}%<br>"
-                f"• गलत स्वतः निर्णय: {rep.auto_wrong} मिला + {rep.missing_wrong} लापता<br>"
-                f"• जाँच हेतु भेजे गए: {rep.review}<br>"
+            return trf(
+                "<b>{}</b> (मिला ≥ {}%, जाँचें ≥ {}%)<br>• स्वतः 'मिला' जिनमें कंप्यूटर सही: <b>{}/{}</b> "
+                "(परिशुद्धता {}%)<br>• वास्तविक मिलानों में से स्वतः पकड़े गए: {}%<br>"
+                "• गलत स्वतः निर्णय: {} मिला + {} लापता<br>• जाँच हेतु भेजे गए: {}<br>",
+                tr(title), int(rep.thr_matched * 100), int(rep.thr_review * 100),
+                rep.auto_correct, rep.auto_matched, f"{rep.precision * 100:.1f}",
+                f"{rep.recall * 100:.1f}", rep.auto_wrong, rep.missing_wrong, rep.review,
             )
 
-        html = (
-            f"आपके <b>{cur.labels}</b> मानवीय सत्यापन निर्णयों के आधार पर "
-            f"(स्वतः-स्वीकृत गिने नहीं गए):<br><br>" + block(cur, "वर्तमान सीमाएँ")
-        )
+        html = trf(
+            "आपके <b>{}</b> मानवीय सत्यापन निर्णयों के आधार पर (स्वतः-स्वीकृत गिने नहीं गए):<br><br>", cur.labels
+        ) + block(cur, "वर्तमान सीमाएँ")
         if sug is None:
-            html += (
-                f"<br><i>सीमा सुझाव हेतु कम से कम {MIN_LABELS_FOR_SUGGESTION} निर्णय चाहिए "
-                f"(अभी {cur.labels})।</i>"
-            )
-            QMessageBox.information(self, "📈 सटीकता जाँच", html)
+            html += trf("<br><i>सीमा सुझाव हेतु कम से कम {} निर्णय चाहिए (अभी {})।</i>",
+                        MIN_LABELS_FOR_SUGGESTION, cur.labels)
+            QMessageBox.information(self, tr("📈 सटीकता जाँच"), html)
             return
 
         same = abs(sug.thr_matched - self.thresh_matched) < 1e-9 and abs(sug.thr_review - self.thresh_review) < 1e-9
         html += "<br>" + block(sug, "सुझाई गई सीमाएँ")
-        html += (
-            "<br><i>ध्यान दें: अधिकतर 'जाँचें' श्रेणी के रिकॉर्ड ही जाँचे जाते हैं, अतः यह अनुमान है।</i>"
-        )
+        html += tr("<br><i>ध्यान दें: अधिकतर 'जाँचें' श्रेणी के रिकॉर्ड ही जाँचे जाते हैं, अतः यह अनुमान है।</i>")
         if same:
-            html += "<br><br>✅ वर्तमान सीमाएँ पहले से सर्वोत्तम हैं।"
-            QMessageBox.information(self, "📈 सटीकता जाँच", html)
+            html += tr("<br><br>✅ वर्तमान सीमाएँ पहले से सर्वोत्तम हैं।")
+            QMessageBox.information(self, tr("📈 सटीकता जाँच"), html)
             return
 
         box = QMessageBox(self)
-        box.setWindowTitle("📈 सटीकता जाँच एवं सीमा सुझाव")
+        box.setWindowTitle(tr("📈 सटीकता जाँच एवं सीमा सुझाव"))
         box.setTextFormat(Qt.RichText)
-        box.setText(html + "<br><br>क्या सुझाई गई सीमाएँ लागू करें? (असत्यापित रिकॉर्ड तुरंत पुनः वर्गीकृत होंगे)")
+        box.setText(html + tr("<br><br>क्या सुझाई गई सीमाएँ लागू करें? (असत्यापित रिकॉर्ड तुरंत पुनः वर्गीकृत होंगे)"))
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         if box.exec() == QMessageBox.Yes:
             self.page_settings.set_threshold_values(sug.thr_matched, sug.thr_review)

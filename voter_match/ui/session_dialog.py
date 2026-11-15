@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-from voter_match.ui.i18n import mark_translatable
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
+from voter_match.ui.i18n import mark_headers_only, mark_translatable
 from voter_match.storage.session_manager import (
     SavedSessionData,
     get_default_session_manager,
@@ -218,7 +219,7 @@ class OpenSessionDialog(QDialog):
 
         # Sessions Table
         self.table_sessions = QTableWidget()
-        mark_translatable(self.table_sessions)  # session ID column is ASCII, never translated
+        mark_headers_only(self.table_sessions)  # titles / file names / IDs are user data
         self.table_sessions.setColumnCount(6)
         self.table_sessions.setHorizontalHeaderLabels([
             "सत्र शीर्षक",
@@ -231,6 +232,7 @@ class OpenSessionDialog(QDialog):
         self.table_sessions.setAlternatingRowColors(True)
         self.table_sessions.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_sessions.setSelectionMode(QTableWidget.SingleSelection)
+        enable_table_copy(self.table_sessions, read_only=True)
         self.table_sessions.setStyleSheet(
             f"QTableWidget {{ background-color: #FFFFFF; color: {TEXT_DARK}; "
             f"gridline-color: #E2E8F0; font-size: 12px; border: 1px solid {BORDER_COLOR}; }} "

@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
 
 from voter_match.core.batch import BatchJob, run_batch
 from voter_match.core.scorer import ColumnMapping
-from voter_match.ui.i18n import mark_translatable
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
+from voter_match.ui.i18n import mark_headers_only, skip_translation, tr, translate_keep_args
 from voter_match.ui.theme import GREEN_PRIMARY, NAVY_PRIMARY
 
 FILE_FILTER = "Excel / CSV Files (*.xlsx *.xls *.csv);;All Files (*.*)"
@@ -108,10 +109,11 @@ class BatchDialog(QDialog):
         bar.addStretch()
         layout.addLayout(bar)
 
-        self.table = mark_translatable(QTableWidget(0, 3))  # label column holds file stems
+        self.table = mark_headers_only(QTableWidget(0, 3))  # part names / file names are user data
         self.table.setHorizontalHeaderLabels(["भाग / बूथ नाम", "सूची A (संदर्भ) फ़ाइल", "सूची B (सत्यापन) फ़ाइल"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        enable_table_copy(self.table)
         self.table.setStyleSheet(
             f"QHeaderView::section {{ background-color: {NAVY_PRIMARY}; color: #FFFFFF; font-weight: bold; padding: 5px; }}"
         )
@@ -127,7 +129,7 @@ class BatchDialog(QDialog):
         layout.addLayout(out_row)
 
         prog_row = QHBoxLayout()
-        self.lbl_status = QLabel("तैयार")
+        self.lbl_status = skip_translation(QLabel(tr("तैयार")))
         self.lbl_status.setStyleSheet("font-weight: bold; color: #334155;")
         prog_row.addWidget(self.lbl_status, stretch=1)
         self.pbar = QProgressBar()
@@ -241,7 +243,8 @@ class BatchDialog(QDialog):
         self.btn_cancel.setEnabled(running)
 
     def on_progress(self, i: int, n: int, msg: str) -> None:
-        self.lbl_status.setText(msg)
+        # the part name inside the message is user data: keep it, translate the wording
+        self.lbl_status.setText(translate_keep_args(msg))
         self.pbar.setValue(int(100 * i / max(1, n)))
 
     def on_finished(self, outcomes, summary_path: str) -> None:

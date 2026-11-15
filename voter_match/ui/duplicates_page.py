@@ -26,6 +26,9 @@ from PySide6.QtWidgets import (
 )
 
 from voter_match.core.duplicates import DuplicateDetector, DuplicateCluster, HouseholdGroup
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
+from voter_match.core.column_suggest import suggest_columns
+from voter_match.ui.i18n import mark_data_columns, on_language_changed, skip_translation, tr
 from voter_match.ui.i18n import mark_translatable
 from voter_match.ui.theme import (
     fit_table_columns,
@@ -91,6 +94,7 @@ class DuplicatesPage(QWidget):
         self.combo_target_list = QComboBox()
         self.combo_target_list.addItems(["सूची B (सत्यापन सूची)", "सूची A (संदर्भ सूची)"])
         mark_translatable(self.combo_target_list)  # index 0 = List B
+        self.combo_target_list.currentIndexChanged.connect(lambda _i: self.update_columns_label())
         ctrl_box.addWidget(self.combo_target_list)
 
         self.btn_run_dup = QPushButton("🔍 डुप्लिकेट खोजें (Find Duplicates)")
@@ -130,17 +134,25 @@ class DuplicatesPage(QWidget):
         )
 
         # TAB 1: Duplicates
-        self.table_duplicates = mark_translatable(QTableWidget())
+        self.table_duplicates = enable_table_copy(mark_translatable(QTableWidget()), read_only=True)
+        mark_data_columns(self.table_duplicates, {1, 2, 3})  # voter, relative, house = data
         self.table_duplicates.setAlternatingRowColors(True)
         self.table_duplicates.setStyleSheet(table_qss)
         self.tabs.addTab(self.table_duplicates, "⚠️ संभावित डुप्लिकेट मतदाता")
 
         # TAB 2: Households
-        self.table_households = mark_translatable(QTableWidget())
+        self.table_households = enable_table_copy(mark_translatable(QTableWidget()), read_only=True)
+        mark_data_columns(self.table_households, {0, 2, 3})  # house, head, member names = data
         self.table_households.setAlternatingRowColors(True)
         self.table_households.setStyleSheet(table_qss)
         self.tabs.addTab(self.table_households, "🏠 पारिवारिक / मकान क्लस्टर")
 
+        # Which columns are being compared (so the BLO can verify the mapping)
+        self.lbl_columns = skip_translation(QLabel(""))
+        on_language_changed(lambda _lang: self.update_columns_label())
+        self.lbl_columns.setStyleSheet("color: #334155; font-size: 12px; padding: 0 4px;")
+        self.lbl_columns.setWordWrap(True)
+        main_layout.insertWidget(main_layout.indexOf(self.tabs), self.lbl_columns)
         main_layout.addWidget(self.tabs)
 
     def set_data(self, recs_a: list[dict[str, Any]], recs_b: list[dict[str, Any]], cols_a: list[str], cols_b: list[str]) -> None:
@@ -148,6 +160,53 @@ class DuplicatesPage(QWidget):
         self.records_b = recs_b
         self.cols_a = cols_a
         self.cols_b = cols_b
+        self.update_columns_label()
+
+    # Supplies the live Step-2 column mapping (set by the main window)
+    mapping_provider = None
+
+    def resolve_columns(self, use_b: bool) -> dict[str, str | None]:
+        """Columns for the chosen list: the user's Step-2 mapping first (List A
+        uses col_a, List B col_b), then keyword auto-detection for any gap."""
+        cols = self.cols_b if use_b else self.cols_a
+        roles = ["voter_name", "relative_name", "age", "gender", "house_no"]
+        out: dict[str, str | None] = {r: None for r in roles}
+        mappings = []
+        if callable(self.mapping_provider):
+            try:
+                mappings = self.mapping_provider() or []
+            except Exception:
+                mappings = []
+        for m in mappings:
+            if m.role in out:
+                col = m.col_b if use_b else m.col_a
+                if col and col in cols:
+                    out[m.role] = col
+        missing = [r for r in roles if not out[r]]
+        if missing and cols:
+            used = {c for c in out.values() if c}
+            sug = suggest_columns([c for c in cols if c not in used], missing)
+            for r in missing:
+                out[r] = sug.get(r)
+        if not out["voter_name"] and cols:
+            out["voter_name"] = cols[0]
+        return out
+
+    def update_columns_label(self) -> None:
+        if not hasattr(self, "lbl_columns"):
+            return
+        if not (self.cols_a or self.cols_b):
+            self.lbl_columns.setText("")
+            return
+        c = self.resolve_columns(self.combo_target_list.currentIndex() == 0)
+        # Column names are the user's data: only the captions are translated
+        parts = [
+            f"{tr('नाम')} = {c['voter_name'] or '—'}",
+            f"{tr('सम्बन्धी')} = {c['relative_name'] or '—'}",
+            f"{tr('आयु')} = {c['age'] or '—'}",
+            f"{tr('मकान')} = {c['house_no'] or '—'}",
+        ]
+        self.lbl_columns.setText(tr("🧩 उपयोग किए गए कॉलम: ") + " | ".join(parts))
 
     def run_duplicate_detection(self) -> None:
         use_b = self.combo_target_list.currentIndex() == 0
@@ -158,11 +217,19 @@ class DuplicatesPage(QWidget):
             QMessageBox.warning(self, "सूचना", "कृपया पहले मतदाता सूची आयात करें।")
             return
 
-        voter_col = next((c for c in cols if any(k in c.lower() for k in ["नाम", "voter", "name"])), cols[0])
-        rel_col = next((c for c in cols if any(k in c.lower() for k in ["पिता", "पति", "माता", "relative"])), None)
-        house_col = next((c for c in cols if any(k in c.lower() for k in ["मकान", "गृह", "house"])), None)
+        colmap = self.resolve_columns(use_b)
+        self.update_columns_label()
+        voter_col = colmap["voter_name"]
+        rel_col = colmap["relative_name"]
+        house_col = colmap["house_no"]
 
-        detector = DuplicateDetector(voter_col=voter_col, rel_col=rel_col, house_col=house_col)
+        detector = DuplicateDetector(
+            voter_col=voter_col,
+            rel_col=rel_col,
+            age_col=colmap["age"],
+            gender_col=colmap["gender"],
+            house_col=house_col,
+        )
         self.clusters = detector.find_duplicates(records)
 
         self.table_duplicates.setColumnCount(6)
@@ -205,13 +272,15 @@ class DuplicatesPage(QWidget):
             QMessageBox.warning(self, "सूचना", "कृपया पहले मतदाता सूची आयात करें।")
             return
 
-        house_col = next((c for c in cols if any(k in c.lower() for k in ["मकान", "गृह", "house"])), None)
+        colmap = self.resolve_columns(use_b)
+        self.update_columns_label()
+        house_col = colmap["house_no"]
         if not house_col:
             QMessageBox.warning(self, "कॉलम नहीं मिला", "सूची में 'मकान संख्या' (House No.) कॉलम नहीं मिला।")
             return
 
-        rel_col = next((c for c in cols if any(k in c.lower() for k in ["पिता", "पति", "माता", "relative"])), None)
-        voter_col = next((c for c in cols if any(k in c.lower() for k in ["नाम", "voter", "name"])), cols[0])
+        rel_col = colmap["relative_name"]
+        voter_col = colmap["voter_name"]
 
         self.households = DuplicateDetector.group_by_household(records, house_col=house_col, rel_col=rel_col)
 

@@ -37,6 +37,7 @@ from voter_match.core.normalize import (
 )
 from voter_match.core.learning import get_default_alias_manager
 from PySide6.QtWidgets import QFrame, QRadioButton
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
 from voter_match.ui.i18n import (
     LANG_EN,
     LANG_HI,
@@ -217,6 +218,7 @@ class SettingsPage(QWidget):
         self.table_rules.setStyleSheet(table_qss)
         self.table_rules.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.populate_rules_table()
+        enable_table_copy(self.table_rules)
         layout.addWidget(self.table_rules)
 
         return w
@@ -262,6 +264,7 @@ class SettingsPage(QWidget):
         self.table_aliases.setStyleSheet(table_qss)
         self.table_aliases.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_aliases.setSelectionBehavior(QTableWidget.SelectRows)
+        enable_table_copy(self.table_aliases, read_only=True)
         self.refresh_aliases_table()
         layout.addWidget(self.table_aliases)
 
@@ -274,6 +277,8 @@ class SettingsPage(QWidget):
             self.lbl_test_pkey.setText("-")
             return
         res = normalize_hindi_name(text)
+        for lbl in (self.lbl_test_norm, self.lbl_test_core, self.lbl_test_pkey):
+            skip_translation(lbl)  # normalised forms of the typed name are data
         self.lbl_test_norm.setText(res.normalized)
         self.lbl_test_core.setText(res.core)
         self.lbl_test_pkey.setText(res.phonetic_key)

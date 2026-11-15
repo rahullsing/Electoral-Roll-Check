@@ -3,6 +3,7 @@
 from __future__ import annotations
 import gzip
 import json
+import re
 import os
 import random
 import sys
@@ -14,6 +15,7 @@ import pytest
 import rapidfuzz.fuzz as rf_fuzz
 import rapidfuzz.process as rf_process
 from scipy.optimize import linear_sum_assignment
+from PySide6.QtWidgets import QLabel
 
 from voter_match.core.assignment import solve_sparse_assignment
 from voter_match.core.blocking import CandidateBlocker
@@ -487,7 +489,7 @@ def test_i18n_covers_every_ui_string():
     dev = re.compile(r"[\u0900-\u097F]")
     ui_dir = PROJECT_ROOT / "voter_match" / "ui"
     # Hindi literals that are data/keywords or file names, not UI text
-    allowed = {"_क्लस्टर_ID", "_समानता_स्कोर", "नाम", "पिता", "पति", "माता", "गृह", "बैच_मिलान_रिपोर्ट"}
+    allowed = {"_क्लस्टर_ID", "_समानता_स्कोर", "पिता", "पति", "माता", "गृह", "बैच_मिलान_रिपोर्ट"}
     # The language switch itself is deliberately bilingual so anyone can find it
     allowed |= {"हिंदी", "🌐 हिंदी", "🌐 भाषा / Language:", "भाषा बदलें / Change language (हिंदी ⇄ English)"}
     missing = []
@@ -508,3 +510,232 @@ def test_i18n_covers_every_ui_string():
                 if translate(s) == s:
                     missing.append(f"{f.name}: {s!r}")
     assert not missing, "Untranslated UI strings:\n" + "\n".join(sorted(set(missing)))
+
+
+def test_english_mode_never_alters_voter_names(qapp_or_skip):
+    """Regression: diff highlighting split 'अनामिका' into HTML fragments and the
+    translator turned the fragment 'म' into 'F' (gender), showing 'अनाFका'."""
+    from voter_match.ui import i18n
+    from voter_match.ui.review_page import CandidateCardWidget, highlight_diff_html
+    from voter_match.core.matcher import MatchCandidate
+    from voter_match.core.scorer import ScoreResult
+
+    # matras stay attached to their consonant (no dotted-circle fragments)
+    html_b = highlight_diff_html("मीना देवी", "मीनू देवी")[1]
+    assert "ू" in html_b and ">ू<" not in html_b and ">ा<" not in html_b
+
+    rec_a = {"नाम": "अनामिका कौशिक", "पिता": "राजकुमार कौशिक", "लिंग": "म", "आयु": 24}
+    maps = [ColumnMapping(role="voter_name", col_a="नाम", col_b="नाम"),
+            ColumnMapping(role="relative_name", col_a="पिता", col_b="पिता"),
+            ColumnMapping(role="gender", col_a="लिंग", col_b="लिंग", col_type="category")]
+    cand = MatchCandidate(a_idx=0, score_result=ScoreResult(score=0.84), record_a=rec_a)
+    try:
+        i18n.set_language(i18n.LANG_EN, persist=False)
+        card = CandidateCardWidget(1, cand, "मीनेश कौशिक", "राजकुमार कौशिक", "नाम", "पिता", maps)
+        i18n.apply_to(card, visible_only=False)
+        texts = " ".join(l.text() for l in card.findChildren(QLabel))
+        plain = re.sub(r"<[^>]+>", "", texts)
+        assert "अनामिका" in plain and "F" not in plain.replace("Female", "")
+        assert "Voter:" in plain and "Female" in plain   # caption + gender localised
+    finally:
+        i18n.set_language(i18n.LANG_HI, persist=False)
+
+
+def test_table_copy_produces_excel_tsv_without_changing_cells(qapp_or_skip):
+    from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+    from voter_match.ui.copy_support import copy_table, enable_table_copy, table_to_tsv
+    from voter_match.ui import i18n
+
+    t = enable_table_copy(i18n.mark_translatable(QTableWidget(3, 3)), read_only=True)
+    t.setHorizontalHeaderLabels(["क्र०", "मतदाता का नाम", "स्थिति (Status)"])
+    data = [["1", "अनामिका कौशिक", "मिला"], ["2", "राम\tप्रसाद", "लापता"], ["3", "सीता", "जाँचें"]]
+    for r, row in enumerate(data):
+        for c, v in enumerate(row):
+            t.setItem(r, c, QTableWidgetItem(v))
+    # Excel-style block selection of rows 0-1, columns 1-2
+    t.setRangeSelected(__import__("PySide6.QtWidgets", fromlist=["QTableWidgetSelectionRange"])
+                       .QTableWidgetSelectionRange(0, 1, 1, 2), True)
+    assert table_to_tsv(t) == "अनामिका कौशिक\tमिला\nराम प्रसाद\tलापता"   # tab inside a cell is flattened
+    assert table_to_tsv(t, with_headers=True).splitlines()[0] == "मतदाता का नाम\tस्थिति (Status)"
+    assert table_to_tsv(t, whole_table=True, with_headers=True).count("\n") == 3
+    assert copy_table(t) == 2 and QApplication.clipboard().text().startswith("अनामिका कौशिक")
+    # copying never alters the table
+    assert t.item(0, 1).text() == "अनामिका कौशिक" and t.item(1, 1).text() == "राम\tप्रसाद"
+    assert t.editTriggers() == t.EditTrigger.NoEditTriggers
+
+
+def test_review_copy_buttons_copy_original_record_in_both_languages(qapp_or_skip, tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from voter_match.ui import i18n
+    from voter_match.ui.review_page import CandidateCardWidget, ReviewPage
+
+    data = _small_session()
+    page = ReviewPage()
+    page.storage = StorageManager(tmp_path / "c.db")
+    page.alias_mgr = AliasManager()
+    page.set_data(data.session_result.records_b, data.mappings, data.session_result, "s")
+    page.combo_tier.setCurrentIndex(1)  # all voters
+    page.apply_filter()
+    rec = page.records[page.filtered_indices[0]]
+    try:
+        for lang in (i18n.LANG_HI, i18n.LANG_EN):
+            i18n.set_language(lang, persist=False)
+            page.btn_copy_b.click()
+            clip = QApplication.clipboard().text()
+            # original values, in mapping order (S.No., name, relative, age), never translated
+            assert clip.split("\t")[:4] == [str(rec.record_b["क्र"]), rec.record_b["नाम"],
+                                            rec.record_b["पिता"], str(rec.record_b["आयु"])]
+            assert page._current_b_tsv(True).splitlines()[0].split("\t")[0] == i18n.tr("क्र०")
+            # button label follows the language and is restored after the "copied" flash
+            assert page.btn_copy_b.text().startswith("✅")
+        i18n.set_language(i18n.LANG_HI, persist=False)
+        assert page.btn_copy_b.text() in ("📋 विवरण कॉपी करें [Ctrl+Shift+C]", "✅ कॉपी हुआ")
+        cards = page.cands_container.findChildren(CandidateCardWidget)
+        assert cards, "candidate cards rendered"
+    finally:
+        i18n.set_language(i18n.LANG_HI, persist=False)
+
+
+def test_duplicates_use_relative_name_and_never_chain(qapp_or_skip):
+    from voter_match.core.duplicates import DuplicateDetector
+    from voter_match.core.column_suggest import suggest_columns
+
+    recs = [
+        {"मतदाता का नाम": "मीरा देवी", "संबंधी का नाम": "राजेश", "आयु": 40},
+        {"मतदाता का नाम": "मीना देवी", "संबंधी का नाम": "सुरेश", "आयु": 35},
+        {"मतदाता का नाम": "मनीषा देवी", "संबंधी का नाम": "विनोद", "आयु": 30},
+        {"मतदाता का नाम": "मीनादेवी", "संबंधी का नाम": "सुरेश", "आयु": 36},
+        {"मतदाता का नाम": "शिव कुमार कौशिक", "संबंधी का नाम": "रामनिवास", "आयु": 50},
+        {"मतदाता का नाम": "अश्वनी कुमार कौशिक", "संबंधी का नाम": "रामनिवास", "आयु": 45},
+        {"मतदाता का नाम": "राकेश पचौरी", "संबंधी का नाम": "गजाधर पचौरी", "आयु": 49},
+        {"मतदाता का नाम": "राकश", "संबंधी का नाम": "गजाधर", "आयु": 49},
+        {"मतदाता का नाम": "मुकेश कुमार", "संबंधी का नाम": "रामपाल", "आयु": 52},
+        {"मतदाता का नाम": "मुकेश कुमार", "संबंधी का नाम": "हरिओम", "आयु": 30},
+    ]
+    # 'संबंधी का नाम' (anusvara spelling) is recognised as the relative column
+    assert suggest_columns(list(recs[0]), ["voter_name", "relative_name"])["relative_name"] == "संबंधी का नाम"
+    det = DuplicateDetector(voter_col="मतदाता का नाम", rel_col="संबंधी का नाम", age_col="आयु")
+    groups = sorted(sorted(c.indices) for c in det.find_duplicates(recs))
+    assert groups == [[1, 3], [6, 7]]  # same person only; no brothers, namesakes or chains
+
+
+def test_duplicates_page_uses_step2_mapping(qapp_or_skip):
+    from voter_match.ui.duplicates_page import DuplicatesPage
+
+    page = DuplicatesPage()
+    cols_b = ["क्रम", "मतदाता का नाम", "संबंधी का नाम", "आयु", "पुराना भाग संख्या"]
+    page.set_data([], [{c: "" for c in cols_b}], ["नाम"], cols_b)
+    page.mapping_provider = lambda: [
+        ColumnMapping(role="voter_name", col_a="नाम", col_b="मतदाता का नाम"),
+        ColumnMapping(role="relative_name", col_a=None, col_b="संबंधी का नाम"),
+    ]
+    cols = page.resolve_columns(use_b=True)
+    assert cols["voter_name"] == "मतदाता का नाम" and cols["relative_name"] == "संबंधी का नाम"
+    assert cols["age"] == "आयु"  # gap filled by auto-detection
+    assert "संबंधी का नाम" in page.lbl_columns.text()
+
+
+def test_duplicates_columns_line_keeps_column_names_in_english_mode(qapp_or_skip):
+    from voter_match.ui import i18n
+    from voter_match.ui.duplicates_page import DuplicatesPage
+
+    page = DuplicatesPage()
+    cols_b = ["मतदाता का नाम", "संबंधी का नाम", "आयु"]
+    page.set_data([], [{c: "" for c in cols_b}], ["नाम"], cols_b)
+    try:
+        i18n.set_language(i18n.LANG_EN, persist=False)
+        i18n.apply_to(page, visible_only=False)
+        txt = page.lbl_columns.text()
+        assert txt.startswith("🧩 Columns used:")
+        assert "मतदाता का नाम" in txt and "संबंधी का नाम" in txt and "= आयु" in txt  # data kept as-is
+    finally:
+        i18n.set_language(i18n.LANG_HI, persist=False)
+
+
+def test_quick_search_logic(qapp_or_skip):
+    from voter_match.ui import i18n
+    from voter_match.ui.search_page import SearchPage, MODE_SERIAL
+
+    recs_b = [
+        {"क्रम": 1349.0, "मतदाता का नाम": "सुनील कुमार", "संबंधी का नाम": "ओमप्रकाश", "आयु": 27.0, "लिंग": "पु"},
+        {"क्रम": float("nan"), "मतदाता का नाम": "मकान", "संबंधी का नाम": "सूची", "आयु": 40, "लिंग": "म"},
+    ]
+    cols_b = list(recs_b[0])
+    page = SearchPage()
+    page.set_data([], recs_b, [], cols_b)
+    # live Step-2 mapping is followed even before matching starts
+    page.mapping_provider = lambda: [ColumnMapping(role="serial_no", col_a=None, col_b="क्रम"),
+                                     ColumnMapping(role="voter_name", col_a=None, col_b="मतदाता का नाम"),
+                                     ColumnMapping(role="relative_name", col_a=None, col_b="संबंधी का नाम")]
+    # serial stored as a float (column had a blank) is still found and shown without '.0'
+    page.combo_mode.setCurrentIndex(page.combo_mode.findData(MODE_SERIAL))
+    page.txt_query.setText("1349")
+    page.run_search()
+    assert page.table_b.rowCount() == 1 and page.table_b.item(0, 2).text() == "1349"
+    assert page.table_b.item(0, 5).text() == "27"
+    # result cells are data: never translated in English mode, headings are
+    page.combo_mode.setCurrentIndex(0)
+    try:
+        i18n.set_language(i18n.LANG_EN, persist=False)
+        page.txt_query.setText("मकान")
+        page.run_search()
+        i18n.apply_to(page, visible_only=False)
+        names = [page.table_b.item(r, 3).text() for r in range(page.table_b.rowCount())]
+        assert "मकान" in names            # a voter literally named like a UI word stays as-is
+        assert page.table_b.horizontalHeaderItem(3).text() == "Voter Name"
+        assert page.table_b.item(0, 1).toolTip().startswith("Match type:")
+    finally:
+        i18n.set_language(i18n.LANG_HI, persist=False)
+
+
+def test_english_mode_never_alters_user_data_anywhere(qapp_or_skip):
+    """Adversarial end-to-end check: voter names, relatives, column names and
+    values that are identical to UI words in the translation table must be shown
+    exactly as entered on every screen when the app runs in English."""
+    from PySide6.QtWidgets import QLabel
+    from voter_match.ui import i18n
+    from voter_match.ui.main_window import MainWindow
+
+    # data deliberately equal to dictionary words
+    trap_names = ["मकान", "सूची", "सफल", "विवरण", "निर्णय", "आयु"]
+    cols = ["क्रम", "नाम", "संबंधी का नाम", "आयु", "लिंग"]
+    recs_a = [{"क्रम": i + 1, "नाम": n, "संबंधी का नाम": "मतदाता", "आयु": 30 + i, "लिंग": "महिला",
+               "_orig_row": i + 2} for i, n in enumerate(trap_names)]
+    recs_b = [dict(r) for r in recs_a]
+    w = MainWindow()
+    try:
+        w.on_files_ready_to_map(cols, cols, recs_a, recs_b)
+        maps = [c.get_mapping() for c in w.page_mapping.role_cards]
+        w.mappings = maps
+        res = ElectoralRollMatcher(maps, alias_manager=AliasManager()).run_matching(recs_a, recs_b)
+        w.on_matching_finished(res)
+        w.page_search.txt_query.setText("मकान")
+        w.page_search.run_search()
+
+        i18n.set_language(i18n.LANG_EN, persist=False)
+        for page in range(7):
+            w.switch_page(page)
+            i18n.apply_to(w, visible_only=False)
+
+        # Results table: names / relatives untouched, status translated
+        t = w.page_results.table_results
+        shown_names = {t.item(r, 5).text() for r in range(t.rowCount())}
+        assert set(trap_names) <= shown_names
+        assert {t.item(r, 6).text() for r in range(t.rowCount())} == {"मतदाता"}
+        assert t.item(0, 3).text().strip() in {"Matched", "Review", "Missing"}
+        # Mapping: sample value "महिला" and column names stay data
+        g_card = next(c for c in w.page_mapping.role_cards if c.role == "gender")
+        assert "महिला" in g_card.lbl_sample_a.text() and g_card.lbl_sample_a.text().startswith("✓ List A")
+        assert g_card.combo_a.currentText() == "लिंग"
+        # Quick Search: typed query echoed unchanged; cells unchanged
+        assert "'मकान'" in w.page_search.lbl_status.text()
+        assert w.page_search.table_b.item(0, 3).text() == "मकान"
+        # Review: name labels unchanged
+        w.switch_page(3)
+        w.page_review.combo_tier.setCurrentIndex(1)
+        w.page_review.apply_filter()
+        labels = " ".join(l.text() for l in w.page_review.findChildren(QLabel))
+        assert any(n in labels for n in trap_names) and "मतदाता" in labels
+    finally:
+        i18n.set_language(i18n.LANG_HI, persist=False)
+        w.close()

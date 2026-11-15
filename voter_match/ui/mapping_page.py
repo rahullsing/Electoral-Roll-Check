@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 from voter_match.core.scorer import ColumnMapping, IMPORTANCE_WEIGHTS
 from voter_match.core.column_suggest import ROLE_KEYWORDS, column_role_score, suggest_columns
 from voter_match.storage.db import get_default_storage
-from voter_match.ui.i18n import mark_translatable, tr
+from voter_match.ui.i18n import ROLE_NO_I18N, mark_translatable, on_language_changed, skip_translation, tr, trf
 from voter_match.ui.theme import (
     NAVY_PRIMARY,
     TEXT_DARK,
@@ -270,10 +270,10 @@ class RoleCardWidget(QFrame):
         layout.addLayout(grid)
 
         # Live Sample Preview Chips (Gives teacher instant visual confidence!)
-        self.lbl_sample_a = QLabel("नमूना मान (A): -")
+        self.lbl_sample_a = skip_translation(QLabel(tr("नमूना मान (A): -")))
         self.lbl_sample_a.setStyleSheet("color: #059669; font-size: 11px; font-style: italic;")
 
-        self.lbl_sample_b = QLabel("नमूना मान (B): -")
+        self.lbl_sample_b = skip_translation(QLabel(tr("नमूना मान (B): -")))
         self.lbl_sample_b.setStyleSheet("color: #059669; font-size: 11px; font-style: italic;")
 
         sample_row = QHBoxLayout()
@@ -299,18 +299,18 @@ class RoleCardWidget(QFrame):
 
         if col_a and self.combo_a.currentIndex() > 0 and col_a in self.sample_rec_a:
             val_a = str(self.sample_rec_a.get(col_a, "") or "")
-            self.lbl_sample_a.setText(f"✓ सूची A पहली पंक्ति: \"{val_a}\"")
+            self.lbl_sample_a.setText(trf('✓ सूची A पहली पंक्ति: "{}"', val_a))
             self.lbl_sample_a.setStyleSheet("color: #166534; font-size: 11px; font-weight: bold;")
         else:
-            self.lbl_sample_a.setText("नमूना मान (A): -")
+            self.lbl_sample_a.setText(tr("नमूना मान (A): -"))
             self.lbl_sample_a.setStyleSheet("color: #94A3B8; font-size: 11px;")
 
         if col_b and self.combo_b.currentIndex() > 0 and col_b in self.sample_rec_b:
             val_b = str(self.sample_rec_b.get(col_b, "") or "")
-            self.lbl_sample_b.setText(f"✓ सूची B पहली पंक्ति: \"{val_b}\"")
+            self.lbl_sample_b.setText(trf('✓ सूची B पहली पंक्ति: "{}"', val_b))
             self.lbl_sample_b.setStyleSheet("color: #166534; font-size: 11px; font-weight: bold;")
         else:
-            self.lbl_sample_b.setText("नमूना मान (B): -")
+            self.lbl_sample_b.setText(tr("नमूना मान (B): -"))
             self.lbl_sample_b.setStyleSheet("color: #94A3B8; font-size: 11px;")
 
     def get_mapping(self) -> ColumnMapping:
@@ -365,6 +365,7 @@ class MappingPage(QWidget):
         self.role_cards: list[RoleCardWidget] = []
         self.storage = get_default_storage()
         self.init_ui()
+        on_language_changed(lambda _lang: [c.update_sample_previews() for c in self.role_cards])
 
     def init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -532,6 +533,7 @@ class MappingPage(QWidget):
         if profs:
             for name in profs:
                 self.combo_profile.addItem(name, name)  # data = real profile name
+                self.combo_profile.setItemData(self.combo_profile.count() - 1, True, ROLE_NO_I18N)
         else:
             self.combo_profile.addItem("-- कोई प्रोफ़ाइल नहीं --", None)
         mark_translatable(self.combo_profile)

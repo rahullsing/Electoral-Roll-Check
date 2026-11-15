@@ -33,7 +33,16 @@ import re
 
 from voter_match.core.normalize import NormalizedName, get_default_normalizer, normalize_hindi_name
 from voter_match.core.similarity import name_similarity
-from voter_match.ui.i18n import mark_translatable
+from voter_match.ui.copy_support import enable_table_copy, make_selectable
+from voter_match.ui.i18n import (
+    display_gender,
+    mark_headers_only,
+    mark_translatable,
+    on_language_changed,
+    skip_translation,
+    tr,
+    trf,
+)
 from voter_match.ui.theme import BORDER_COLOR, NAVY_PRIMARY, TEXT_DARK, scoped_style
 
 MAX_RESULTS = 50
@@ -53,7 +62,12 @@ def normalize_epic_like(val: Any) -> str:
     leading zeros dropped from pure numbers ('०१२' == '12')."""
     if val is None:
         return ""
-    s = re.sub(r"[^A-Z0-9]", "", get_default_normalizer().normalize_digits(str(val)).upper())
+    if isinstance(val, float) and val.is_integer():
+        val = int(val)  # 1349.0 -> 1349 (else the '.' removal would give 13490)
+    s = str(val).strip()
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+    s = re.sub(r"[^A-Z0-9]", "", get_default_normalizer().normalize_digits(s).upper())
     if s.isdigit():
         s = s.lstrip("0") or "0"
     return s
@@ -80,6 +94,8 @@ class _ListSide:
         if not col:
             return ""
         v = rec.get(col, "")
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)  # show serial / age / house 1349, not 1349.0
         s = "" if v is None else str(v).strip()
         return "" if s.lower() == "nan" else s
 
@@ -100,6 +116,7 @@ class SearchPage(QWidget):
         self._debounce.setInterval(300)
         self._debounce.timeout.connect(self.run_search)
         self.init_ui()
+        on_language_changed(lambda _lang: self._on_language())
 
     # Legacy attribute names used elsewhere/tests
     @property
@@ -163,7 +180,7 @@ class SearchPage(QWidget):
 
         main_layout.addWidget(bar)
 
-        self.lbl_status = QLabel("सूचियाँ लोड करने के बाद ऊपर नाम टाइप करें — परिणाम तुरंत दिखेंगे।")
+        self.lbl_status = skip_translation(QLabel(tr("सूचियाँ लोड करने के बाद ऊपर नाम टाइप करें — परिणाम तुरंत दिखेंगे।")))
         self.lbl_status.setStyleSheet("color: #475569; font-size: 12px; padding: 0 4px;")
         main_layout.addWidget(self.lbl_status)
 
@@ -180,16 +197,17 @@ class SearchPage(QWidget):
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
-        lbl = QLabel(f"<b>{title}</b>")
+        lbl = skip_translation(QLabel(f"<b>{tr(title)}</b>"))
+        lbl.setProperty("_title", title)
         lbl.setTextFormat(Qt.RichText)
         lbl.setStyleSheet(f"color: {NAVY_PRIMARY}; font-size: 13px; padding: 2px 4px;")
         lay.addWidget(lbl)
 
-        table = mark_translatable(QTableWidget(0, len(HEADERS)))
+        table = mark_headers_only(QTableWidget(0, len(HEADERS)))
         table.setHorizontalHeaderLabels(HEADERS)
         table.setAlternatingRowColors(True)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        enable_table_copy(table, read_only=True, cell_selection=True)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(28)
         hdr = table.horizontalHeader()
@@ -238,11 +256,28 @@ class SearchPage(QWidget):
         self._cols_a, self._cols_b = cols_a, cols_b
         self.side_a.load(recs_a, self._resolve_cols(cols_a, mappings, "a"))
         self.side_b.load(recs_b, self._resolve_cols(cols_b, mappings, "b"))
-        self.lbl_status.setText(
-            f"सूची A: {len(recs_a):,} मतदाता | सूची B: {len(recs_b):,} मतदाता — ऊपर नाम टाइप करें।"
-        )
+        self._loaded_counts = (f"{len(recs_a):,}", f"{len(recs_b):,}")
+        self._show_idle_status()
         if self.txt_query.text().strip():
             self.run_search()
+
+    # Supplies the live Step-2 column mapping (set by the main window)
+    mapping_provider = None
+
+    def _sync_columns(self) -> None:
+        """Re-resolve columns from the live Step-2 mapping before each search, so
+        a mapping change is picked up even before matching is started."""
+        if not callable(self.mapping_provider) or not (self._raw_a or self._raw_b):
+            return
+        try:
+            mappings = self.mapping_provider() or None
+        except Exception:
+            return
+        for side, raw, cols, key in ((self.side_a, self._raw_a, self._cols_a, "a"),
+                                     (self.side_b, self._raw_b, self._cols_b, "b")):
+            wanted = self._resolve_cols(cols, mappings, key)
+            if wanted != side.cols:
+                side.load(raw, wanted)
 
     def set_mappings(self, mappings: list) -> None:
         """Use the confirmed Step-2 column mapping (more reliable than guessing)."""
@@ -250,6 +285,21 @@ class SearchPage(QWidget):
             self.set_data(self._raw_a, self._raw_b, self._cols_a, self._cols_b, mappings)
 
     # ------------------------------------------------------------------ search
+
+    def _show_idle_status(self) -> None:
+        counts = getattr(self, "_loaded_counts", None)
+        if counts:
+            self.lbl_status.setText(trf("सूची A: {} मतदाता | सूची B: {} मतदाता — ऊपर नाम टाइप करें।", *counts))
+        else:
+            self.lbl_status.setText(tr("सूचियाँ लोड करने के बाद ऊपर नाम टाइप करें — परिणाम तुरंत दिखेंगे।"))
+        for lbl in (self.lbl_a, self.lbl_b):
+            lbl.setText(f"<b>{tr(lbl.property('_title'))}</b>")
+
+    def _on_language(self) -> None:
+        if self.txt_query.text().strip():
+            self.run_search()
+        else:
+            self._show_idle_status()
 
     def _on_text_changed(self, text: str) -> None:
         if len(text.strip()) >= 2:
@@ -290,20 +340,20 @@ class SearchPage(QWidget):
         query = self.txt_query.text().strip()
         if not query:
             return
+        self._sync_columns()
         mode = self.combo_mode.currentData() or MODE_NAME
         res_a = self._score_side(self.side_a, query, mode)
         res_b = self._score_side(self.side_b, query, mode)
         self._populate(self.table_a, self.side_a, res_a[:MAX_RESULTS])
         self._populate(self.table_b, self.side_b, res_b[:MAX_RESULTS])
-        self.lbl_a.setText(f"<b>सूची A (संदर्भ)</b> — {min(len(res_a), MAX_RESULTS)} / {len(res_a)} परिणाम")
-        self.lbl_b.setText(f"<b>सूची B (सत्यापन)</b> — {min(len(res_b), MAX_RESULTS)} / {len(res_b)} परिणाम")
+        self.lbl_a.setText(trf("<b>सूची A (संदर्भ)</b> — {} / {} परिणाम", min(len(res_a), MAX_RESULTS), len(res_a)))
+        self.lbl_b.setText(trf("<b>सूची B (सत्यापन)</b> — {} / {} परिणाम", min(len(res_b), MAX_RESULTS), len(res_b)))
         if not res_a and not res_b:
-            self.lbl_status.setText(f"'{query}' से मिलता-जुलता कोई मतदाता नहीं मिला। स्पेलिंग बदलकर या 'खोजें' विकल्प बदलकर देखें।")
+            self.lbl_status.setText(trf("'{}' से मिलता-जुलता कोई मतदाता नहीं मिला। स्पेलिंग बदलकर या 'खोजें' विकल्प बदलकर देखें।", query))
         else:
-            self.lbl_status.setText(
-                f"'{query}' के लिए परिणाम — सबसे अधिक समानता वाले ऊपर। हरा ≥ 88%, पीला ≥ 70%। "
-                "समानता पर माउस रखें तो मिलान का प्रकार दिखेगा।"
-            )
+            self.lbl_status.setText(trf(
+                "'{}' के लिए परिणाम — सबसे अधिक समानता वाले ऊपर। हरा ≥ 88%, पीला ≥ 70%। "
+                "समानता पर माउस रखें तो मिलान का प्रकार दिखेगा।", query))
 
     # Backwards-compatible name
     def _populate_search_table(self, table, items, voter_col) -> None:  # pragma: no cover
@@ -324,7 +374,7 @@ class SearchPage(QWidget):
                 side.value(rec, "voter_name"),
                 side.value(rec, "relative_name"),
                 side.value(rec, "age"),
-                side.value(rec, "gender"),
+                display_gender(side.value(rec, "gender")),
                 side.value(rec, "house_no"),
                 str(orig_row),
             ]
@@ -337,7 +387,7 @@ class SearchPage(QWidget):
                     item.setFont(bold)
                 if col == 1:
                     item.setFont(bold)
-                    item.setToolTip(f"मिलान का प्रकार: {method}")
+                    item.setToolTip(tr(f"मिलान का प्रकार: {method}"))
                     if sim >= 0.88:
                         item.setBackground(QBrush(QColor(220, 252, 231)))
                         item.setForeground(QBrush(QColor(22, 101, 52)))

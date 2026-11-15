@@ -50,6 +50,7 @@ _SETTINGS_KEY = "ui/language"
 _TRANSLATABLE = "_i18n_translatable"
 _SKIP = "_i18n_skip"
 _ROLE_ORIG = int(Qt.UserRole) + 0x4E1  # private item-data role for originals
+ROLE_NO_I18N = int(Qt.UserRole) + 0x4E2  # item flag: never translate (user data)
 
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 _HTML_SPLIT = re.compile(r"(<[^>]+>)")
@@ -117,9 +118,14 @@ def _clean_groups(groups) -> bool:
     return not any(sep in g for g in groups for sep in _SEPARATORS)
 
 
+# Fragments shorter than this inside composite/HTML text are never translated:
+# they are usually pieces of a voter name split by highlighting, not UI words.
+_MIN_FRAGMENT = 3
+
+
 def _translate_padded(text: str) -> str:
     stripped = text.strip()
-    if not stripped:
+    if len(stripped) < _MIN_FRAGMENT:
         return text
     lead = text[: len(text) - len(text.lstrip())]
     trail = text[len(text.rstrip()):]
@@ -129,6 +135,59 @@ def _translate_padded(text: str) -> str:
 def tr(text: str) -> str:
     """Translate text for the current language (identity in Hindi mode)."""
     return translate(text) if _current == LANG_EN else text
+
+
+def trf(template: str, *args) -> str:
+    """Fill a Hindi template ("... {} ...") with RAW values (names, file names,
+    search text, column names...) and translate only the fixed wording.
+    Use this whenever user data is inserted into UI text."""
+    if _current == LANG_EN:
+        en = EN_TEMPLATES.get(template)
+        if en is not None:
+            return en.format(*args)
+    return template.format(*args)
+
+
+def translate_keep_args(text: str) -> str:
+    """Like tr() for an already-formatted message, but the variable parts of a
+    matching template are kept exactly as they are (never translated)."""
+    if _current != LANG_EN or not text or not _DEVANAGARI.search(text):
+        return text
+    hit = EN_PLAIN.get(text)
+    if hit is not None:
+        return hit
+    for pattern, en in _TEMPLATES:
+        m = pattern.match(text)
+        if m and _clean_groups(m.groups()):
+            return en.format(*m.groups())
+    return text
+
+
+def keep_item(item):
+    """Mark a table item / header item as user data (never translated)."""
+    item.setData(ROLE_NO_I18N, True)
+    return item
+
+
+def mark_data_columns(table: QTableWidget, columns) -> QTableWidget:
+    """Cells in these columns hold voter/user data and are never translated
+    (headings still are)."""
+    table.setProperty("_i18n_data_cols", sorted(set(int(c) for c in columns)))
+    return table
+
+
+_GENDER_EN = {"M": "Male", "F": "Female", "T": "Other"}
+
+
+def display_gender(value) -> str:
+    """Gender cell value for display. Uses the matcher's gender normaliser, so
+    it is only ever applied to a known gender value - never to a name."""
+    raw = "" if value is None else str(value).strip()
+    if _current != LANG_EN or not raw:
+        return raw
+    from voter_match.core.scorer import normalize_gender
+
+    return _GENDER_EN.get(normalize_gender(raw), raw)
 
 
 # --------------------------------------------------------------- settings
@@ -155,6 +214,15 @@ def mark_translatable(widget: QWidget) -> QWidget:
     item data, not item text, for logic)."""
     widget.setProperty(_TRANSLATABLE, True)
     return widget
+
+
+def mark_headers_only(table: QTableWidget) -> QTableWidget:
+    """Translate only the column headings of a table whose cells are pure voter
+    data (names, ages, house numbers...), so data is never passed through
+    the translator."""
+    table.setProperty(_TRANSLATABLE, True)
+    table.setProperty("_i18n_headers_only", True)
+    return table
 
 
 def skip_translation(widget: QWidget) -> QWidget:
@@ -197,10 +265,11 @@ def _swap_item(item, getter, setter) -> None:
 def _apply_table(table: QTableWidget, visible_only: bool) -> None:
     for c in range(table.columnCount()):
         h = table.horizontalHeaderItem(c)
-        if h is not None:
+        if h is not None and not h.data(ROLE_NO_I18N):
             _swap_item(h, h.text, h.setText)
+    data_cols = set(table.property("_i18n_data_cols") or [])
     rows = table.rowCount()
-    if rows == 0:
+    if rows == 0 or table.property("_i18n_headers_only"):
         return
     if visible_only:
         top = table.rowAt(0)
@@ -211,13 +280,17 @@ def _apply_table(table: QTableWidget, visible_only: bool) -> None:
         first, last = 0, rows - 1
     for r in range(first, last + 1):
         for c in range(table.columnCount()):
+            if c in data_cols:
+                continue
             it = table.item(r, c)
-            if it is not None:
+            if it is not None and not it.data(ROLE_NO_I18N):
                 _swap_item(it, it.text, it.setText)
 
 
 def _apply_combo(combo: QComboBox) -> None:
     for i in range(combo.count()):
+        if combo.itemData(i, ROLE_NO_I18N):
+            continue  # user data (e.g. a saved profile name)
         cur = combo.itemText(i)
         stored = combo.itemData(i, _ROLE_ORIG)
         orig = stored[0] if isinstance(stored, (list, tuple)) and len(stored) == 2 and cur == stored[1] else cur
